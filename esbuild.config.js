@@ -29,6 +29,8 @@ async function build() {
     format: "iife",
     platform: "browser",
     target: "es2022",
+    conditions: ["style"],
+    loader: { ".css": "css" },
   });
 
   if (watch) {
