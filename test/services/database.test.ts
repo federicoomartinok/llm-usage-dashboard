@@ -115,6 +115,38 @@ describe('DatabaseService', () => {
     });
   });
 
+  describe('getAllSnapshots / getSnapshotCount / getStorageBytes', () => {
+    it('getAllSnapshots devuelve todos los snapshots del provider sin filtrar por tiempo', () => {
+      const now = new Date().toISOString();
+      const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+      db.insertSnapshot(makeSnapshot({ timestamp: now }));
+      db.insertSnapshot(makeSnapshot({ timestamp: monthAgo }));
+      db.insertSnapshot(makeSnapshot({ provider: 'openai', timestamp: now }));
+
+      const anthropicAll = db.getAllSnapshots('anthropic');
+      expect(anthropicAll).toHaveLength(2);
+
+      const openaiAll = db.getAllSnapshots('openai');
+      expect(openaiAll).toHaveLength(1);
+    });
+
+    it('getSnapshotCount refleja el total global de snapshots almacenados', () => {
+      expect(db.getSnapshotCount()).toBe(0);
+
+      db.insertSnapshot(makeSnapshot());
+      db.insertSnapshot(makeSnapshot({ provider: 'openai' }));
+
+      expect(db.getSnapshotCount()).toBe(2);
+    });
+
+    it('getStorageBytes retorna 0 cuando el store es en memoria', () => {
+      // DB instanciada en beforeEach con dbPath=null
+      db.insertSnapshot(makeSnapshot());
+      expect(db.getStorageBytes()).toBe(0);
+    });
+  });
+
   describe('purgeOldSnapshots', () => {
     it('elimina snapshots más antiguos que el período de retención', () => {
       const now = new Date();

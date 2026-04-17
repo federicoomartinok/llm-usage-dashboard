@@ -4,28 +4,74 @@
   "description": "Real-time LLM usage monitoring dashboard for VS Code",
   "version": "0.1.0",
   "publisher": "fede",
-  "engines": { "vscode": "^1.85.0" },
-  "categories": ["Other"],
-  "activationEvents": ["onStartupFinished"],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
-      "activitybar": [{ "id": "llm-usage", "title": "LLM Usage", "icon": "media/icon.svg" }]
+      "activitybar": [
+        {
+          "id": "llm-usage",
+          "title": "LLM Usage",
+          "icon": "media/icon.svg"
+        }
+      ]
     },
     "views": {
-      "llm-usage": [{ "type": "webview", "id": "llmUsage.sidebar", "name": "Usage Dashboard" }]
+      "llm-usage": [
+        {
+          "id": "llmUsage.sidebar",
+          "name": "Usage Dashboard"
+        }
+      ]
     },
+    "viewsWelcome": [
+      {
+        "view": "llmUsage.sidebar",
+        "contents": "$(graph) [Abrir Dashboard](command:llmUsage.showDashboard)"
+      }
+    ],
     "commands": [
-      { "command": "llmUsage.showDashboard", "title": "LLM Usage: Show Dashboard" },
-      { "command": "llmUsage.refreshNow", "title": "LLM Usage: Refresh Now" }
+      {
+        "command": "llmUsage.showDashboard",
+        "title": "LLM Usage: Show Dashboard"
+      },
+      {
+        "command": "llmUsage.refreshNow",
+        "title": "LLM Usage: Refresh Now"
+      }
     ],
     "configuration": {
       "title": "LLM Usage Dashboard",
       "properties": {
-        "llmUsage.pollingIntervalSeconds": { "type": "number", "default": 60, "minimum": 30, "description": "Polling interval in seconds" },
-        "llmUsage.alertThresholdWarning": { "type": "number", "default": 80, "description": "Usage % to trigger warning" },
-        "llmUsage.alertThresholdCritical": { "type": "number", "default": 95, "description": "Usage % to trigger critical notification" },
-        "llmUsage.anthropicBetaHeader": { "type": "string", "default": "oauth-2025-04-20", "description": "Anthropic beta header value" }
+        "llmUsage.pollingIntervalSeconds": {
+          "type": "number",
+          "default": 60,
+          "minimum": 30,
+          "description": "Polling interval in seconds"
+        },
+        "llmUsage.alertThresholdWarning": {
+          "type": "number",
+          "default": 80,
+          "description": "Usage % to trigger warning"
+        },
+        "llmUsage.alertThresholdCritical": {
+          "type": "number",
+          "default": 95,
+          "description": "Usage % to trigger critical notification"
+        },
+        "llmUsage.anthropicBetaHeader": {
+          "type": "string",
+          "default": "oauth-2025-04-20",
+          "description": "Anthropic beta header value"
+        }
       }
     }
   },
@@ -40,12 +86,13 @@
     "@types/node": "^20.11.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/sql.js": "^1.4.11",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.0.0",
     "esbuild": "^0.24.0",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0",
-    "@vscode/vsce": "^3.0.0"
+    "vitest": "^3.0.0"
   },
   "dependencies": {
     "react": "^19.0.0",
