@@ -42,9 +42,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     const nonce = getNonce();
     const cspSource = webview.cspSource;
 
-    // URI del bundle React compilado
+    // URIs de los bundles compilados
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview.js')
+    );
+    const styleUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview.css')
     );
 
     return /* html */ `<!DOCTYPE html>
@@ -57,6 +60,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
              script-src 'nonce-${nonce}';
              style-src ${cspSource} 'unsafe-inline';
              font-src ${cspSource};" />
+  <link rel="stylesheet" href="${styleUri}" />
   <title>LLM Usage Dashboard</title>
   <style>
     body {
