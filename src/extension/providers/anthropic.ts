@@ -112,8 +112,8 @@ export class AnthropicProvider implements UsageProvider {
     }
     return {
       isEnabled: raw.is_enabled ?? false,
-      monthlyLimit: raw.monthly_limit ?? 0,
-      usedCredits: raw.used_credits ?? 0,
+      monthlyLimit: (raw.monthly_limit ?? 0) / 100,  // API devuelve centavos
+      usedCredits: (raw.used_credits ?? 0) / 100,    // API devuelve centavos
       utilization: raw.utilization ?? null,
     };
   }
