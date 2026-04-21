@@ -2,7 +2,7 @@
   "name": "llm-usage-dashboard",
   "displayName": "LLM Usage Dashboard",
   "description": "Real-time LLM usage monitoring dashboard for VS Code",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "fede",
   "engines": {
     "vscode": "^1.85.0"
@@ -15,24 +15,6 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "llm-usage",
-          "title": "LLM Usage",
-          "icon": "media/icon.svg"
-        }
-      ]
-    },
-    "views": {
-      "llm-usage": [
-        {
-          "type": "webview",
-          "id": "llmUsage.sidebar",
-          "name": "Usage Dashboard"
-        }
-      ]
-    },
     "commands": [
       {
         "command": "llmUsage.showDashboard",

@@ -9,8 +9,7 @@ import { PollerService } from './services/poller';
 import { AnthropicProvider } from './providers/anthropic';
 import { HtmlExporter } from './services/html-exporter';
 import { PanelProvider } from './webview/panel-provider';
-import { SidebarProvider } from './webview/sidebar-provider';
-import type { UsageSnapshot, AccountProfile, WebviewMessage } from './providers/types';
+import type { UsageSnapshot } from './providers/types';
 
 let poller: PollerService | null = null;
 let database: DatabaseService | null = null;
@@ -51,34 +50,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     panel.open(html);
   };
 
-  // Sidebar webview — dashboard React embebido en la barra lateral
-  const sidebar = new SidebarProvider(context.extensionUri);
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider('llmUsage.sidebar', sidebar, {
-      webviewOptions: { retainContextWhenHidden: true },
-    })
-  );
-
-  // Status bar — visible siempre, click abre el panel completo
+  // Status bar — único punto de entrada visible. Click abre el panel completo.
   const statusBarItem = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Right,
     100
   );
   statusBarItem.command = 'llmUsage.showDashboard';
-  statusBarItem.tooltip = 'LLM Usage — click para abrir el dashboard completo';
-  statusBarItem.text = '$(graph) LLM —';
+  statusBarItem.name = 'Claude Usage';
+  statusBarItem.text = '$(sparkle) Claude —';
+  statusBarItem.color = new vscode.ThemeColor('statusBarItem.prominentForeground');
+  statusBarItem.tooltip = buildTooltip(null);
   statusBarItem.show();
   context.subscriptions.push(statusBarItem);
 
   const updateStatusBar = (snapshot: UsageSnapshot | null) => {
     if (!snapshot) {
-      statusBarItem.text = '$(graph) LLM —';
+      statusBarItem.text = '$(sparkle) Claude —';
+      statusBarItem.tooltip = buildTooltip(null);
+      statusBarItem.backgroundColor = undefined;
       return;
     }
     const session = Math.round(snapshot.fiveHour.utilization);
     const week = Math.round(snapshot.sevenDay.utilization);
-    statusBarItem.text = `$(flame) ${session}% · $(calendar) ${week}%`;
-    // Color cuando algo está saturado
+    statusBarItem.text = `$(sparkle) Claude  $(flame) ${session}%  ·  $(calendar) ${week}%`;
+    statusBarItem.tooltip = buildTooltip(snapshot);
+
+    // Background cuando hay saturación; foreground prominente siempre
     const max = Math.max(session, week);
     if (max >= 95) {
       statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
@@ -88,57 +85,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       statusBarItem.backgroundColor = undefined;
     }
   };
-
-  // Manda el state inicial al sidebar cuando pide 'init', y responde a refresh-now
-  context.subscriptions.push(
-    vscode.window.onDidChangeActiveColorTheme(() => {
-      // Re-render del sidebar al cambiar tema (no es crítico, pero evita parpadeo)
-    })
-  );
-
-  const sendStateToSidebar = (profile: AccountProfile | null) => {
-    const history = database?.getSnapshots('anthropic', 24) ?? [];
-    const current = history.length > 0 ? history[history.length - 1] : null;
-    sidebar.postMessage({
-      type: 'state',
-      current,
-      history,
-      profile,
-    });
-  };
-
-  // Suscripción a mensajes del sidebar — se cablea cuando el view se resuelve
-  const wireSidebarMessages = () => {
-    const disposable = sidebar.onDidReceiveMessage((msg: WebviewMessage) => {
-      switch (msg.type) {
-        case 'init': {
-          const profile = database?.getProfile('anthropic') ?? null;
-          sendStateToSidebar(profile);
-          break;
-        }
-        case 'refresh-now':
-          void poller?.pollOnce();
-          break;
-        case 'request-history': {
-          const history = database?.getSnapshots('anthropic', msg.hours) ?? [];
-          const profile = database?.getProfile('anthropic') ?? null;
-          const current = history.length > 0 ? history[history.length - 1] : null;
-          sidebar.postMessage({ type: 'state', current, history, profile });
-          break;
-        }
-      }
-    });
-    if (disposable) context.subscriptions.push(disposable);
-  };
-
-  // El view tarda un tick en resolverse — reintentamos hasta que esté listo
-  const wireInterval = setInterval(() => {
-    if (sidebar.isVisible) {
-      wireSidebarMessages();
-      clearInterval(wireInterval);
-    }
-  }, 500);
-  context.subscriptions.push({ dispose: () => clearInterval(wireInterval) });
 
   context.subscriptions.push({ dispose: () => panel.dispose() });
 
@@ -151,14 +97,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const html = exporter.generate(snapshot, profile, history, buildStats());
       panel.update(html);
 
-      // Push al sidebar webview y al status bar
-      sidebar.postMessage({ type: 'usage-update', data: snapshot });
       updateStatusBar(snapshot);
     },
 
     onError: (error: Error, providerId: string) => {
       console.error(`[llm-usage] Error en provider "${providerId}":`, error.message);
-      sidebar.postMessage({ type: 'error', message: error.message });
     },
   });
 
@@ -175,8 +118,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const html = exporter.generate(current, profile, history, buildStats());
     panel.update(html);
 
-    // Sincroniza sidebar y status bar
-    sidebar.postMessage({ type: 'profile-update', data: profile });
     if (current) updateStatusBar(current);
   }).catch((err: unknown) => {
     console.warn('[llm-usage] No se pudo obtener el perfil al arranque:', err);
@@ -201,4 +142,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 export function deactivate(): void {
   poller?.stop();
   database?.close();
+}
+
+function buildTooltip(snapshot: UsageSnapshot | null): vscode.MarkdownString {
+  const md = new vscode.MarkdownString('', true);
+  md.isTrusted = true;
+  md.supportThemeIcons = true;
+
+  if (!snapshot) {
+    md.appendMarkdown('### $(sparkle) Claude Usage\n\n');
+    md.appendMarkdown('_Esperando primer poll..._\n\n');
+    md.appendMarkdown('Click para abrir el dashboard completo.');
+    return md;
+  }
+
+  const session = snapshot.fiveHour.utilization.toFixed(1);
+  const week = snapshot.sevenDay.utilization.toFixed(1);
+  const sonnet = snapshot.sevenDaySonnet.utilization.toFixed(1);
+  const credits = snapshot.extraUsage.usedCredits.toFixed(2);
+  const limit = snapshot.extraUsage.monthlyLimit;
+
+  md.appendMarkdown('### $(sparkle) Claude Usage\n\n');
+  md.appendMarkdown('| Ventana | Uso |\n|---|---:|\n');
+  md.appendMarkdown(`| $(flame) Sesión 5h | **${session}%** |\n`);
+  md.appendMarkdown(`| $(calendar) Semanal 7d | **${week}%** |\n`);
+  md.appendMarkdown(`| $(star) Sonnet 7d | **${sonnet}%** |\n`);
+  if (snapshot.extraUsage.isEnabled) {
+    md.appendMarkdown(`| $(credit-card) Créditos extra | **$${credits}** / $${limit} |\n`);
+  }
+  md.appendMarkdown('\n_Click para abrir el dashboard completo._');
+  return md;
 }
