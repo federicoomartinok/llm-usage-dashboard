@@ -269,21 +269,9 @@ function heroKpiCard(p: HeroKpiProps): string {
 
 function creditsCardHtml(snapshot: UsageSnapshot | null, history: UsageSnapshot[]): string {
   const extra = snapshot?.extraUsage;
-  const enabled = extra?.isEnabled ?? false;
   const used = extra?.usedCredits ?? 0;
   const limit = extra?.monthlyLimit ?? 0;
   const utilizationPct = limit > 0 ? (used / limit) * 100 : 0;
-
-  if (!enabled) {
-    return `
-      <div class="hero-card credits-card disabled">
-        <div class="hero-top">
-          <div class="hero-label">Extra Usage</div>
-        </div>
-        <div class="credits-amount muted">—</div>
-        <div class="credits-sub">Pay-as-you-go deshabilitado</div>
-      </div>`;
-  }
 
   // Burn de créditos en USD/día (24h)
   const dayMs = 24 * 3_600_000;
@@ -314,7 +302,7 @@ function creditsCardHtml(snapshot: UsageSnapshot | null, history: UsageSnapshot[
       </div>
       <div class="hero-foot">
         <span class="hero-burn">${burnUsdPerDay >= 0 ? '+' : ''}${formatMoney(burnUsdPerDay)}/día</span>
-        <span class="hero-reset">${utilizationPct.toFixed(1)}% del mes</span>
+        <span class="hero-reset">${limit > 0 ? `${utilizationPct.toFixed(1)}% del mes` : 'sin créditos cargados'}</span>
       </div>
     </div>`;
 }
@@ -520,59 +508,6 @@ function statsChipsHtml(history: UsageSnapshot[], snapshot: UsageSnapshot | null
 // ============================================================
 // Account card
 // ============================================================
-
-function accountCardHtml(profile: AccountProfile | null): string {
-  if (!profile) {
-    return `
-      <div class="card account-card">
-        <h3><span>Cuenta</span></h3>
-        <div class="muted">Sin perfil disponible</div>
-      </div>`;
-  }
-
-  const statusActive = profile.subscriptionStatus === 'active';
-  const plan = formatPlanName(profile.planType) || '—';
-  const tier = profile.tier && profile.tier !== 'default' ? profile.tier : '—';
-
-  return `
-    <div class="card account-card">
-      <h3><span>Cuenta</span></h3>
-      <div class="account-row">
-        <span class="label">Nombre</span>
-        <span class="value">${escapeHtml(profile.displayName || '—')}</span>
-      </div>
-      <div class="account-row">
-        <span class="label">Email</span>
-        <span class="value">${escapeHtml(maskEmail(profile.email))}</span>
-      </div>
-      <div class="account-row">
-        <span class="label">Plan</span>
-        <span class="value" style="color:${COLOR.accent}">${escapeHtml(plan)}</span>
-      </div>
-      <div class="account-row">
-        <span class="label">Tier</span>
-        <span class="value">${escapeHtml(tier)}</span>
-      </div>
-      <div class="account-row">
-        <span class="label">Facturación</span>
-        <span class="value">${escapeHtml(profile.billingType || '—')}</span>
-      </div>
-      <div class="account-row">
-        <span class="label">Estado</span>
-        <span class="value" style="color:${statusActive ? COLOR.ok : COLOR.warn}">
-          ${statusActive ? 'Activa' : escapeHtml(profile.subscriptionStatus || '—')}
-        </span>
-      </div>
-      <div class="account-row">
-        <span class="label">Miembro desde</span>
-        <span class="value">${escapeHtml(formatMonthYear(profile.subscriptionCreatedAt))}</span>
-      </div>
-      <div class="account-row divider">
-        <span class="label">Proveedor</span>
-        <span class="value">Anthropic</span>
-      </div>
-    </div>`;
-}
 
 // ============================================================
 // Header (con burn rate global)
@@ -1085,23 +1020,6 @@ function buildHtml(
     .chart-empty-icon { font-size: 28px; opacity: 0.4; margin-bottom: 4px; }
     .chart-empty-sub { font-size: 11px; opacity: 0.7; }
 
-    /* ---------- Account card ---------- */
-    .account-card .account-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 7px 0;
-      font-size: 12px;
-      border-bottom: 1px solid ${COLOR.cardBorder}33;
-    }
-    .account-card .account-row:last-child { border-bottom: none; }
-    .account-card .account-row.divider {
-      border-top: 1px solid ${COLOR.cardBorder}77;
-      margin-top: 6px;
-      padding-top: 10px;
-    }
-    .account-card .label { color: ${COLOR.muted}; }
-    .account-card .value { color: ${COLOR.fg}; font-weight: 600; font-variant-numeric: tabular-nums; }
     .muted { color: ${COLOR.mutedDim}; font-style: italic; font-size: 13px; }
 
     /* ---------- Status bar ---------- */
@@ -1154,7 +1072,6 @@ function buildHtml(
 
     <div class="heatmap-row">
       ${heatmapHtml(history)}
-      ${accountCardHtml(profile)}
     </div>
 
     <div class="charts-row">

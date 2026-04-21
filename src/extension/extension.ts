@@ -167,9 +167,7 @@ function buildTooltip(snapshot: UsageSnapshot | null): vscode.MarkdownString {
   md.appendMarkdown(`| $(flame) Sesión 5h | **${session}%** |\n`);
   md.appendMarkdown(`| $(calendar) Semanal 7d | **${week}%** |\n`);
   md.appendMarkdown(`| $(star) Sonnet 7d | **${sonnet}%** |\n`);
-  if (snapshot.extraUsage.isEnabled) {
-    md.appendMarkdown(`| $(credit-card) Créditos extra | **$${credits}** / $${limit} |\n`);
-  }
+  md.appendMarkdown(`| $(credit-card) Créditos extra | **$${credits}** / $${limit} |\n`);
   md.appendMarkdown('\n_Click para abrir el dashboard completo._');
   return md;
 }
