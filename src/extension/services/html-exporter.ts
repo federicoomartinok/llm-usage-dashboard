@@ -630,15 +630,6 @@ function headerHtml(profile: AccountProfile | null, snapshot: UsageSnapshot | nu
     </div>`;
 }
 
-function providerTabsHtml(): string {
-  return `
-    <div class="provider-tabs">
-      <div class="provider-tab active"><span class="tab-dot"></span>Anthropic</div>
-      <div class="provider-tab disabled"><span class="tab-dot"></span>Google AI <small>(pronto)</small></div>
-      <div class="provider-tab disabled"><span class="tab-dot"></span>OpenAI <small>(pronto)</small></div>
-    </div>`;
-}
-
 function statusBarHtml(stats: StorageStats): string {
   const sizeText = stats.storageBytes > 0 ? formatBytes(stats.storageBytes) : '—';
   const now = new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -804,32 +795,6 @@ function buildHtml(
     .burn-text { display: flex; flex-direction: column; line-height: 1.15; }
     .burn-rate { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
     .burn-sub { font-size: 10px; color: ${COLOR.mutedDim}; text-transform: lowercase; }
-
-    /* ---------- Provider tabs ---------- */
-    .provider-tabs { display: flex; gap: 8px; margin-bottom: 22px; flex-wrap: wrap; }
-    .provider-tab {
-      padding: 7px 14px;
-      border-radius: 10px;
-      font-size: 12px;
-      font-weight: 500;
-      border: 1px solid ${COLOR.border};
-      background: ${COLOR.card}55;
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      color: ${COLOR.muted};
-      display: flex; align-items: center; gap: 8px;
-      transition: all 0.2s;
-    }
-    .provider-tab small { font-size: 10px; opacity: 0.8; }
-    .provider-tab.active {
-      background: linear-gradient(135deg, ${COLOR.accent}33, ${COLOR.accent}11);
-      border-color: ${COLOR.accent}aa;
-      color: ${COLOR.accent};
-      box-shadow: 0 2px 12px ${COLOR.accent}22;
-    }
-    .provider-tab.disabled { opacity: 0.45; }
-    .tab-dot { width: 6px; height: 6px; border-radius: 50%; background: ${COLOR.mutedDim}; }
-    .provider-tab.active .tab-dot { background: ${COLOR.ok}; box-shadow: 0 0 6px ${COLOR.ok}; }
 
     /* ---------- Hero KPI cards ---------- */
     .gauges-row {
@@ -1182,7 +1147,6 @@ function buildHtml(
 <body>
   <div class="container">
     ${headerHtml(profile, snapshot, history)}
-    ${providerTabsHtml()}
 
     <div class="gauges-row">
       ${heroes}
