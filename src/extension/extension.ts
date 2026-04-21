@@ -9,7 +9,8 @@ import { PollerService } from './services/poller';
 import { AnthropicProvider } from './providers/anthropic';
 import { HtmlExporter } from './services/html-exporter';
 import { PanelProvider } from './webview/panel-provider';
-import type { UsageSnapshot } from './providers/types';
+import { SidebarProvider } from './webview/sidebar-provider';
+import type { UsageSnapshot, AccountProfile, WebviewMessage } from './providers/types';
 
 let poller: PollerService | null = null;
 let database: DatabaseService | null = null;
@@ -50,13 +51,95 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     panel.open(html);
   };
 
-  // Tree view vacío — el viewsWelcome muestra el botón "Abrir Dashboard"
+  // Sidebar webview — dashboard React embebido en la barra lateral
+  const sidebar = new SidebarProvider(context.extensionUri);
   context.subscriptions.push(
-    vscode.window.registerTreeDataProvider('llmUsage.sidebar', {
-      getTreeItem: () => new vscode.TreeItem(''),
-      getChildren: () => [],
+    vscode.window.registerWebviewViewProvider('llmUsage.sidebar', sidebar, {
+      webviewOptions: { retainContextWhenHidden: true },
     })
   );
+
+  // Status bar — visible siempre, click abre el panel completo
+  const statusBarItem = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Right,
+    100
+  );
+  statusBarItem.command = 'llmUsage.showDashboard';
+  statusBarItem.tooltip = 'LLM Usage — click para abrir el dashboard completo';
+  statusBarItem.text = '$(graph) LLM —';
+  statusBarItem.show();
+  context.subscriptions.push(statusBarItem);
+
+  const updateStatusBar = (snapshot: UsageSnapshot | null) => {
+    if (!snapshot) {
+      statusBarItem.text = '$(graph) LLM —';
+      return;
+    }
+    const session = Math.round(snapshot.fiveHour.utilization);
+    const week = Math.round(snapshot.sevenDay.utilization);
+    statusBarItem.text = `$(flame) ${session}% · $(calendar) ${week}%`;
+    // Color cuando algo está saturado
+    const max = Math.max(session, week);
+    if (max >= 95) {
+      statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+    } else if (max >= 80) {
+      statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    } else {
+      statusBarItem.backgroundColor = undefined;
+    }
+  };
+
+  // Manda el state inicial al sidebar cuando pide 'init', y responde a refresh-now
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveColorTheme(() => {
+      // Re-render del sidebar al cambiar tema (no es crítico, pero evita parpadeo)
+    })
+  );
+
+  const sendStateToSidebar = (profile: AccountProfile | null) => {
+    const history = database?.getSnapshots('anthropic', 24) ?? [];
+    const current = history.length > 0 ? history[history.length - 1] : null;
+    sidebar.postMessage({
+      type: 'state',
+      current,
+      history,
+      profile,
+    });
+  };
+
+  // Suscripción a mensajes del sidebar — se cablea cuando el view se resuelve
+  const wireSidebarMessages = () => {
+    const disposable = sidebar.onDidReceiveMessage((msg: WebviewMessage) => {
+      switch (msg.type) {
+        case 'init': {
+          const profile = database?.getProfile('anthropic') ?? null;
+          sendStateToSidebar(profile);
+          break;
+        }
+        case 'refresh-now':
+          void poller?.pollOnce();
+          break;
+        case 'request-history': {
+          const history = database?.getSnapshots('anthropic', msg.hours) ?? [];
+          const profile = database?.getProfile('anthropic') ?? null;
+          const current = history.length > 0 ? history[history.length - 1] : null;
+          sidebar.postMessage({ type: 'state', current, history, profile });
+          break;
+        }
+      }
+    });
+    if (disposable) context.subscriptions.push(disposable);
+  };
+
+  // El view tarda un tick en resolverse — reintentamos hasta que esté listo
+  const wireInterval = setInterval(() => {
+    if (sidebar.isVisible) {
+      wireSidebarMessages();
+      clearInterval(wireInterval);
+    }
+  }, 500);
+  context.subscriptions.push({ dispose: () => clearInterval(wireInterval) });
+
   context.subscriptions.push({ dispose: () => panel.dispose() });
 
   poller = new PollerService([anthropic], {
@@ -67,10 +150,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const profile = database?.getProfile('anthropic') ?? null;
       const html = exporter.generate(snapshot, profile, history, buildStats());
       panel.update(html);
+
+      // Push al sidebar webview y al status bar
+      sidebar.postMessage({ type: 'usage-update', data: snapshot });
+      updateStatusBar(snapshot);
     },
 
     onError: (error: Error, providerId: string) => {
       console.error(`[llm-usage] Error en provider "${providerId}":`, error.message);
+      sidebar.postMessage({ type: 'error', message: error.message });
     },
   });
 
@@ -86,6 +174,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const current = history.length > 0 ? history[history.length - 1] : null;
     const html = exporter.generate(current, profile, history, buildStats());
     panel.update(html);
+
+    // Sincroniza sidebar y status bar
+    sidebar.postMessage({ type: 'profile-update', data: profile });
+    if (current) updateStatusBar(current);
   }).catch((err: unknown) => {
     console.warn('[llm-usage] No se pudo obtener el perfil al arranque:', err);
   });
