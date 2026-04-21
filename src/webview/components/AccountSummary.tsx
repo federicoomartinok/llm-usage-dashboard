@@ -5,7 +5,6 @@ interface AccountSummaryProps {
   profile: AccountProfile;
 }
 
-// Convierte claves snake_case del API a nombres legibles
 function formatPlanName(planType: string): string {
   const map: Record<string, string> = {
     claude_max: 'Claude Max',
@@ -17,53 +16,96 @@ function formatPlanName(planType: string): string {
   return map[planType] ?? planType.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-// Muestra el nivel del plan (ej. "5x", "10x") si está disponible
 function formatTier(tier: string): string {
   if (!tier || tier === 'default') return '';
   return tier;
 }
 
-// Formatea fecha de suscripción para mostrar mes y año
 function formatSubDate(dateStr: string): string {
   if (!dateStr) return '';
   const d = new Date(dateStr);
-  return d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+  return d.toLocaleDateString('es-AR', { month: 'short', year: 'numeric' });
 }
 
 export function AccountSummary({ profile }: AccountSummaryProps) {
   const plan = formatPlanName(profile.planType);
   const tier = formatTier(profile.tier);
   const subDate = formatSubDate(profile.subscriptionCreatedAt);
+  const isActive = profile.subscriptionStatus === 'active';
 
   return (
-    <div>
-      {/* Nombre · plan · nivel */}
-      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-fg)' }}>
-        {profile.displayName}
+    <div
+      className="glass-card"
+      style={{
+        padding: '10px 12px',
+      }}
+    >
+      {/* Nombre + plan chip */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          flexWrap: 'wrap',
+          marginBottom: 4,
+        }}
+      >
+        <span
+          style={{
+            fontSize: 13,
+            fontWeight: 700,
+            color: 'var(--color-fg)',
+            letterSpacing: '-0.01em',
+          }}
+        >
+          {profile.displayName}
+        </span>
         {plan && (
-          <span style={{ fontWeight: 400, color: 'var(--color-muted)' }}>
-            {' · '}{plan}
-            {tier && <span> · {tier}</span>}
+          <span
+            style={{
+              fontSize: 9,
+              fontWeight: 700,
+              padding: '2px 7px',
+              borderRadius: 999,
+              background: 'rgba(137, 180, 250, 0.15)',
+              border: '1px solid rgba(137, 180, 250, 0.4)',
+              color: 'var(--color-accent)',
+              letterSpacing: '0.02em',
+            }}
+          >
+            {plan}{tier && ` · ${tier}`}
           </span>
         )}
       </div>
 
-      {/* Estado y fecha de inicio */}
-      <div style={{ fontSize: 11, color: 'var(--color-muted)', marginTop: 2 }}>
+      {/* Estado + suscripción */}
+      <div
+        style={{
+          fontSize: 10,
+          color: 'var(--color-muted-dim)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+        }}
+      >
         <span
+          className={isActive ? 'animate-pulse-soft' : ''}
           style={{
             display: 'inline-block',
             width: 6,
             height: 6,
             borderRadius: '50%',
-            backgroundColor:
-              profile.subscriptionStatus === 'active' ? 'var(--color-ok)' : 'var(--color-warn)',
-            marginRight: 4,
-            verticalAlign: 'middle',
+            backgroundColor: isActive ? 'var(--color-ok)' : 'var(--color-warn)',
+            boxShadow: isActive ? '0 0 6px var(--color-ok)' : 'none',
           }}
         />
-        {profile.subscriptionStatus === 'active' ? 'Activa' : profile.subscriptionStatus}
-        {subDate && <span> · desde {subDate}</span>}
+        <span>{isActive ? 'Activa' : profile.subscriptionStatus}</span>
+        {subDate && (
+          <>
+            <span style={{ opacity: 0.5 }}>·</span>
+            <span>desde {subDate}</span>
+          </>
+        )}
       </div>
     </div>
   );

@@ -5,16 +5,16 @@ interface StatusBarProps {
   onRefresh: () => void;
 }
 
-// Calcula tiempo relativo legible desde una fecha pasada
 function relativeTime(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
   if (seconds < 60) return `hace ${seconds}s`;
   const minutes = Math.floor(seconds / 60);
-  return `hace ${minutes}m`;
+  if (minutes < 60) return `hace ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `hace ${hours}h`;
 }
 
 export function StatusBar({ lastUpdated, onRefresh }: StatusBarProps) {
-  // Ticker para refrescar el tiempo relativo cada 5 segundos
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -28,46 +28,49 @@ export function StatusBar({ lastUpdated, onRefresh }: StatusBarProps) {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        fontSize: 11,
-        color: 'var(--color-muted)',
+        fontSize: 10,
+        color: 'var(--color-muted-dim)',
+        letterSpacing: '0.02em',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        {/* Punto verde pulsante cuando hay datos */}
         {lastUpdated && (
           <span
+            className="animate-pulse-soft"
             style={{
               display: 'inline-block',
               width: 6,
               height: 6,
               borderRadius: '50%',
               backgroundColor: 'var(--color-ok)',
-              boxShadow: '0 0 4px var(--color-ok)',
+              boxShadow: '0 0 6px var(--color-ok)',
             }}
           />
         )}
         <span>{lastUpdated ? relativeTime(lastUpdated) : 'Conectando...'}</span>
       </div>
 
-      {/* Botón de actualización manual */}
       <button
         onClick={onRefresh}
         title="Actualizar ahora"
         style={{
-          background: 'none',
-          border: 'none',
+          background: 'rgba(69, 71, 90, 0.4)',
+          border: '1px solid rgba(205, 214, 244, 0.08)',
           cursor: 'pointer',
           color: 'var(--color-muted)',
-          padding: '2px 4px',
-          borderRadius: 3,
-          fontSize: 12,
+          padding: '3px 8px',
+          borderRadius: 6,
+          fontSize: 11,
           lineHeight: 1,
+          transition: 'all 0.2s',
         }}
         onMouseEnter={(e) => {
-          (e.currentTarget as HTMLButtonElement).style.color = 'var(--color-fg)';
+          (e.currentTarget as HTMLButtonElement).style.color = 'var(--color-accent)';
+          (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(137, 180, 250, 0.4)';
         }}
         onMouseLeave={(e) => {
           (e.currentTarget as HTMLButtonElement).style.color = 'var(--color-muted)';
+          (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(205, 214, 244, 0.08)';
         }}
       >
         ↻

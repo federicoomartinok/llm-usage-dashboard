@@ -17,25 +17,23 @@ interface ChartPoint {
   session: number;
 }
 
-// Extrae hora:minuto de un timestamp ISO para el eje X
 function formatTime(timestamp: string): string {
   const d = new Date(timestamp);
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
 }
 
-// Tooltip personalizado con estilo del tema VS Code
 function CustomTooltip({ active, payload }: { active?: boolean; payload?: Array<{ value: number }> }) {
   if (!active || !payload?.length) return null;
 
   return (
     <div
+      className="glass-card tabular"
       style={{
-        backgroundColor: 'var(--vscode-editorWidget-background, #252526)',
-        border: '1px solid var(--color-border)',
-        borderRadius: 4,
-        padding: '4px 8px',
-        fontSize: 11,
+        padding: '4px 9px',
+        fontSize: 10,
+        fontWeight: 700,
         color: 'var(--color-fg)',
+        borderRadius: 6,
       }}
     >
       {payload[0].value.toFixed(1)}%
@@ -52,11 +50,20 @@ export function MiniTrendChart({ snapshots }: MiniTrendChartProps) {
   }));
 
   return (
-    <div style={{ marginBottom: 4 }}>
-      <div style={{ fontSize: 11, color: 'var(--color-muted)', marginBottom: 4 }}>
-        Tendencia (sesión)
+    <div className="glass-card" style={{ padding: '8px 10px 4px' }}>
+      <div
+        style={{
+          fontSize: 10,
+          color: 'var(--color-muted-dim)',
+          marginBottom: 4,
+          textTransform: 'uppercase',
+          letterSpacing: '0.06em',
+          fontWeight: 600,
+        }}
+      >
+        Tendencia sesión
       </div>
-      <ResponsiveContainer width="100%" height={80}>
+      <ResponsiveContainer width="100%" height={70}>
         <AreaChart data={data} margin={{ top: 2, right: 2, left: 0, bottom: 0 }}>
           <defs>
             <linearGradient id="sessionGradient" x1="0" y1="0" x2="0" y2="1">
@@ -65,9 +72,7 @@ export function MiniTrendChart({ snapshots }: MiniTrendChartProps) {
             </linearGradient>
           </defs>
 
-          {/* Eje X oculto — sólo se usa el valor para el tooltip */}
           <XAxis dataKey="time" hide />
-
           <Tooltip content={<CustomTooltip />} />
 
           <Area

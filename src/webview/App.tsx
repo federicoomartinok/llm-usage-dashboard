@@ -5,98 +5,92 @@ import { CreditsMeter } from './components/CreditsMeter';
 import { MiniTrendChart } from './components/MiniTrendChart';
 import { AccountSummary } from './components/AccountSummary';
 import { StatusBar } from './components/StatusBar';
-
-// Separador visual entre secciones
-function Divider() {
-  return (
-    <div
-      style={{
-        borderTop: '1px solid var(--color-border)',
-        margin: '4px 0',
-      }}
-    />
-  );
-}
+import { BurnRateBadge } from './components/BurnRateBadge';
 
 export function App() {
-  const { current, history, profile, lastUpdated, error, refreshNow } = useExtensionMessage();
+  const { current, history, profile, lastUpdated, error, refreshNow, metrics, creditsBurnUsdPerDay } =
+    useExtensionMessage();
 
-  // Estado inicial antes de recibir datos de la extensión
   if (!current) {
     return (
-      <div style={{ color: 'var(--color-muted)', fontSize: 12, padding: '8px 0' }}>
-        Conectando...
+      <div
+        style={{
+          color: 'var(--color-muted)',
+          fontSize: 12,
+          padding: '12px 8px',
+          textAlign: 'center',
+        }}
+      >
+        <span className="animate-pulse-soft" style={{ display: 'inline-block' }}>
+          Conectando...
+        </span>
       </div>
     );
   }
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 12,
-      }}
-    >
-      {/* Banner de error (si existe) */}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '2px' }}>
+      {/* Banner de error */}
       {error && (
         <div
+          className="glass-card"
           style={{
-            backgroundColor: 'rgba(244, 67, 54, 0.12)',
-            border: '1px solid var(--color-error)',
-            borderRadius: 4,
-            padding: '6px 8px',
+            padding: '7px 10px',
             fontSize: 11,
             color: 'var(--color-error)',
+            borderColor: 'rgba(243, 139, 168, 0.4)',
+            background: 'rgba(243, 139, 168, 0.08)',
           }}
         >
           {error}
         </div>
       )}
 
-      {/* Perfil de cuenta */}
-      {profile && (
-        <>
-          <AccountSummary profile={profile} />
-          <Divider />
-        </>
-      )}
+      {/* Account + burn rate header */}
+      {profile && <AccountSummary profile={profile} />}
 
-      {/* Medidores de uso */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <BurnRateBadge burn={metrics.sevenDay.burn} projection={metrics.sevenDay.projection} />
+      </div>
+
+      {/* Medidores con sparklines y proyecciones */}
       <div>
         <UsageMeter
-          label="Sesión (5h)"
+          label="Sesión 5h"
           utilization={current.fiveHour.utilization}
           resetsAt={current.fiveHour.resetsAt}
+          sparkline={metrics.fiveHour.sparkline}
+          delta={metrics.fiveHour.delta}
+          projection={metrics.fiveHour.projection}
         />
         <UsageMeter
-          label="Semana (7d)"
+          label="Semanal 7d"
           utilization={current.sevenDay.utilization}
           resetsAt={current.sevenDay.resetsAt}
+          sparkline={metrics.sevenDay.sparkline}
+          delta={metrics.sevenDay.delta}
+          projection={metrics.sevenDay.projection}
         />
         <UsageMeter
-          label="Sonnet (7d)"
+          label="Sonnet 7d"
           utilization={current.sevenDaySonnet.utilization}
           resetsAt={current.sevenDaySonnet.resetsAt}
+          sparkline={metrics.sevenDaySonnet.sparkline}
+          delta={metrics.sevenDaySonnet.delta}
+          projection={metrics.sevenDaySonnet.projection}
+          accentColor="var(--color-sonnet)"
         />
         <CreditsMeter
           usedCredits={current.extraUsage.usedCredits}
           monthlyLimit={current.extraUsage.monthlyLimit}
           isEnabled={current.extraUsage.isEnabled}
+          burnUsdPerDay={creditsBurnUsdPerDay}
         />
       </div>
 
-      {/* Gráfico de tendencia (visible sólo con suficiente historial) */}
-      {history.length >= 2 && (
-        <>
-          <Divider />
-          <MiniTrendChart snapshots={history} />
-        </>
-      )}
+      {/* Tendencia (visible con suficiente historial) */}
+      {history.length >= 2 && <MiniTrendChart snapshots={history} />}
 
-      <Divider />
-
-      {/* Barra de estado y refresco */}
       <StatusBar lastUpdated={lastUpdated} onRefresh={refreshNow} />
     </div>
   );

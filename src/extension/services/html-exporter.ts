@@ -1,6 +1,20 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { UsageSnapshot, AccountProfile } from '../providers/types';
+import {
+  calculateBurnRate,
+  projectExhaustion,
+  calculateDelta,
+  buildSparkline,
+  buildHeatmapBuckets,
+  formatDurationCompact,
+  type BurnRate,
+  type Projection,
+  type Delta,
+  type HeatmapCell,
+  type Severity,
+  type WindowKey,
+} from './metrics-calculator';
 
 export interface StorageStats {
   snapshotCount: number;
@@ -31,11 +45,12 @@ export class HtmlExporter {
 }
 
 // ============================================================
-// Paleta y helpers de formato
+// Paleta Catppuccin Mocha + helpers
 // ============================================================
 
 const COLOR = {
-  bg: '#1e1e2e',
+  bg: '#11111b',
+  bgSoft: '#1e1e2e',
   card: '#313244',
   cardBorder: '#45475a',
   border: '#45475a',
@@ -49,9 +64,9 @@ const COLOR = {
   accent: '#89b4fa',
   opus: '#cba6f7',
   sonnet: '#89b4fa',
+  pink: '#f5c2e7',
 } as const;
 
-// Color según nivel de utilización — verde/amarillo/naranja/rojo
 function utilizationColor(utilization: number): string {
   if (utilization >= 90) return COLOR.error;
   if (utilization >= 70) return COLOR.warnStrong;
@@ -59,19 +74,17 @@ function utilizationColor(utilization: number): string {
   return COLOR.ok;
 }
 
-// Formatea duración hasta un reset en formato legible (1d 2h, 3h 15m, 12m)
+function severityColor(sev: Severity): string {
+  if (sev === 'critical') return COLOR.error;
+  if (sev === 'warn') return COLOR.warnStrong;
+  return COLOR.ok;
+}
+
 function formatResetRelative(resetsAt: string | null): string {
   if (!resetsAt) return '—';
   const diff = new Date(resetsAt).getTime() - Date.now();
   if (diff <= 0) return 'reiniciando';
-
-  const minutes = Math.floor(diff / 60_000);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-
-  if (days > 0) return `${days}d ${hours % 24}h`;
-  if (hours > 0) return `${hours}h ${minutes % 60}m`;
-  return `${minutes}m`;
+  return formatDurationCompact(diff);
 }
 
 function formatMoney(amount: number): string {
@@ -82,7 +95,6 @@ function formatMoney(amount: number): string {
   }).format(amount);
 }
 
-// Fecha abreviada en español (ej. "mar 2026")
 function formatMonthYear(iso: string): string {
   if (!iso) return '—';
   try {
@@ -92,7 +104,6 @@ function formatMonthYear(iso: string): string {
   }
 }
 
-// Enmascara email: fedemartindev05@gmail.com -> fede…@gmail.com
 function maskEmail(email: string): string {
   if (!email || !email.includes('@')) return email;
   const [local, domain] = email.split('@');
@@ -117,7 +128,6 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
-// Nombre legible del plan (claude_max -> Claude Max)
 function formatPlanName(planType: string): string {
   if (!planType) return '';
   const map: Record<string, string> = {
@@ -131,39 +141,125 @@ function formatPlanName(planType: string): string {
 }
 
 // ============================================================
-// Gauge circular SVG
+// Sparkline SVG inline (mini trend)
 // ============================================================
 
-interface GaugeProps {
+function sparklineSvg(points: number[], color: string, width = 80, height = 22): string {
+  if (points.length < 2) {
+    return `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" aria-hidden="true"></svg>`;
+  }
+  const max = Math.max(...points, 1);
+  const min = Math.min(...points, 0);
+  const range = Math.max(1, max - min);
+  const stepX = width / (points.length - 1);
+  const path = points
+    .map((p, i) => {
+      const x = (i * stepX).toFixed(1);
+      const y = (height - ((p - min) / range) * height).toFixed(1);
+      return `${i === 0 ? 'M' : 'L'}${x},${y}`;
+    })
+    .join(' ');
+  const areaPath = `${path} L${width},${height} L0,${height} Z`;
+  const gradId = `spark-${Math.random().toString(36).slice(2, 8)}`;
+
+  return `
+    <svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" aria-hidden="true" class="sparkline">
+      <defs>
+        <linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${color}" stop-opacity="0.35"/>
+          <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <path d="${areaPath}" fill="url(#${gradId})"/>
+      <path d="${path}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    </svg>`;
+}
+
+// ============================================================
+// Delta badge (▲ ▼ —)
+// ============================================================
+
+function deltaBadge(delta: Delta, invert = false): string {
+  if (delta.deltaSign === 'flat') {
+    return `<span class="delta delta-flat">— estable</span>`;
+  }
+  const isUp = delta.deltaSign === 'up';
+  // En usage, "subir" suele ser malo; permitimos invertir la semántica si fuera necesario
+  const bad = invert ? !isUp : isUp;
+  const cls = bad ? 'delta-up' : 'delta-down';
+  const arrow = isUp ? '▲' : '▼';
+  return `<span class="delta ${cls}">${arrow} ${Math.abs(delta.deltaPct).toFixed(1)}%</span>`;
+}
+
+// ============================================================
+// Hero KPI card (gauge + sparkline + delta + projection)
+// ============================================================
+
+interface HeroKpiProps {
   label: string;
   utilization: number;
   resetsAt: string | null;
+  sparkline: number[];
+  delta: Delta;
+  burn: BurnRate;
+  projection: Projection;
+  accentColor?: string;
 }
 
-// Radio 42 → circunferencia ≈ 263.89
 const GAUGE_RADIUS = 42;
 const GAUGE_CIRCUMFERENCE = 2 * Math.PI * GAUGE_RADIUS;
 
-function gaugeHtml({ label, utilization, resetsAt }: GaugeProps): string {
-  const pct = Math.max(0, Math.min(100, utilization));
-  const color = utilizationColor(pct);
+function heroKpiCard(p: HeroKpiProps): string {
+  const pct = Math.max(0, Math.min(100, p.utilization));
+  const color = p.accentColor ?? utilizationColor(pct);
   const offset = GAUGE_CIRCUMFERENCE * (1 - pct / 100);
-  const resetText = formatResetRelative(resetsAt);
+  const resetText = formatResetRelative(p.resetsAt);
+  const burnText =
+    p.burn.samplesUsed >= 2
+      ? `${p.burn.ratePctPerHour >= 0 ? '+' : ''}${p.burn.ratePctPerHour.toFixed(2)}%/h`
+      : '—';
+  const projText =
+    p.projection.exhaustsInMs && p.projection.beforeReset
+      ? `agota en ${formatDurationCompact(p.projection.exhaustsInMs)}`
+      : p.projection.exhaustsInMs
+        ? `proyec ${formatDurationCompact(p.projection.exhaustsInMs)}`
+        : 'sin riesgo';
+  const projColor = severityColor(p.projection.severity);
 
   return `
-    <div class="gauge-card">
-      <div class="gauge-circle">
-        <svg viewBox="0 0 100 100" aria-hidden="true">
-          <circle class="gauge-bg" cx="50" cy="50" r="${GAUGE_RADIUS}"/>
-          <circle class="gauge-fill" cx="50" cy="50" r="${GAUGE_RADIUS}"
-            stroke="${color}"
-            stroke-dasharray="${GAUGE_CIRCUMFERENCE.toFixed(2)}"
-            stroke-dashoffset="${offset.toFixed(2)}"/>
-        </svg>
-        <div class="gauge-value" style="color:${color}">${pct.toFixed(0)}%</div>
+    <div class="hero-card">
+      <div class="hero-top">
+        <div class="hero-label">${escapeHtml(p.label)}</div>
+        ${deltaBadge(p.delta)}
       </div>
-      <div class="gauge-label">${escapeHtml(label)}</div>
-      <div class="gauge-reset">Resetea en ${resetText}</div>
+      <div class="hero-mid">
+        <div class="gauge-circle">
+          <svg viewBox="0 0 100 100" aria-hidden="true">
+            <defs>
+              <linearGradient id="grad-${p.label.replace(/\s+/g, '-')}" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="${color}" stop-opacity="1"/>
+                <stop offset="100%" stop-color="${color}" stop-opacity="0.55"/>
+              </linearGradient>
+            </defs>
+            <circle class="gauge-bg" cx="50" cy="50" r="${GAUGE_RADIUS}"/>
+            <circle class="gauge-fill" cx="50" cy="50" r="${GAUGE_RADIUS}"
+              stroke="url(#grad-${p.label.replace(/\s+/g, '-')})"
+              stroke-dasharray="${GAUGE_CIRCUMFERENCE.toFixed(2)}"
+              stroke-dashoffset="${offset.toFixed(2)}"/>
+          </svg>
+          <div class="gauge-value" style="color:${color}">
+            <span class="gauge-pct">${pct.toFixed(0)}</span><span class="gauge-pct-sym">%</span>
+          </div>
+        </div>
+        <div class="hero-spark">${sparklineSvg(p.sparkline, color, 90, 28)}</div>
+      </div>
+      <div class="hero-foot">
+        <span class="hero-burn" title="Burn rate (regresión sobre las últimas 6h)">${burnText}</span>
+        <span class="hero-reset">reset ${resetText}</span>
+      </div>
+      <div class="hero-projection" style="color:${projColor}">
+        <span class="proj-dot" style="background:${projColor}"></span>${projText}
+      </div>
     </div>`;
 }
 
@@ -171,7 +267,7 @@ function gaugeHtml({ label, utilization, resetsAt }: GaugeProps): string {
 // Card de créditos (Extra Usage)
 // ============================================================
 
-function creditsCardHtml(snapshot: UsageSnapshot | null): string {
+function creditsCardHtml(snapshot: UsageSnapshot | null, history: UsageSnapshot[]): string {
   const extra = snapshot?.extraUsage;
   const enabled = extra?.isEnabled ?? false;
   const used = extra?.usedCredits ?? 0;
@@ -180,39 +276,138 @@ function creditsCardHtml(snapshot: UsageSnapshot | null): string {
 
   if (!enabled) {
     return `
-      <div class="gauge-card credits-card disabled">
-        <div class="credits-header">Extra Usage</div>
+      <div class="hero-card credits-card disabled">
+        <div class="hero-top">
+          <div class="hero-label">Extra Usage</div>
+        </div>
         <div class="credits-amount muted">—</div>
         <div class="credits-sub">Pay-as-you-go deshabilitado</div>
       </div>`;
   }
 
+  // Burn de créditos en USD/día (24h)
+  const dayMs = 24 * 3_600_000;
+  const dayCutoff = Date.now() - dayMs;
+  const recent = history.filter((s) => new Date(s.timestamp).getTime() >= dayCutoff);
+  let burnUsdPerDay = 0;
+  if (recent.length >= 2) {
+    const first = recent[0].extraUsage.usedCredits;
+    const last = recent[recent.length - 1].extraUsage.usedCredits;
+    const elapsedHours =
+      (new Date(recent[recent.length - 1].timestamp).getTime() -
+        new Date(recent[0].timestamp).getTime()) /
+      3_600_000;
+    if (elapsedHours > 0) {
+      burnUsdPerDay = ((last - first) / elapsedHours) * 24;
+    }
+  }
+
   return `
-    <div class="gauge-card credits-card">
-      <div class="credits-header">Extra Usage</div>
+    <div class="hero-card credits-card">
+      <div class="hero-top">
+        <div class="hero-label">Extra Usage</div>
+      </div>
       <div class="credits-amount">${formatMoney(used)}</div>
       <div class="credits-sub">de ${formatMoney(limit)} mensuales</div>
       <div class="credits-bar">
         <div class="credits-bar-fill" style="width:${Math.min(100, utilizationPct).toFixed(1)}%"></div>
       </div>
-      <div class="credits-pct">${utilizationPct.toFixed(1)}% utilizado</div>
+      <div class="hero-foot">
+        <span class="hero-burn">${burnUsdPerDay >= 0 ? '+' : ''}${formatMoney(burnUsdPerDay)}/día</span>
+        <span class="hero-reset">${utilizationPct.toFixed(1)}% del mes</span>
+      </div>
     </div>`;
 }
 
 // ============================================================
-// Chart de actividad 24h — bucketizado por hora
+// Heatmap 7d × 24h
+// ============================================================
+
+function heatmapHtml(history: UsageSnapshot[]): string {
+  const grid = buildHeatmapBuckets(history);
+  const hasAny = grid.some((row) => row.some((c) => c.hasData));
+
+  const days = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+
+  if (!hasAny) {
+    return `
+      <div class="card heatmap-card">
+        <h3><span>Patrón semanal</span><small class="card-sub">7d × 24h</small></h3>
+        <div class="chart-empty">
+          <div class="chart-empty-icon">○</div>
+          <div>Aún sin patrón suficiente</div>
+          <div class="chart-empty-sub">Las celdas se irán pintando con el correr de los días</div>
+        </div>
+      </div>`;
+  }
+
+  const now = new Date();
+  const todayDayIndex = (now.getDay() + 6) % 7;
+  const currentHour = now.getHours();
+
+  const rowsHtml = grid
+    .map((row, di) => {
+      const cellsHtml = row
+        .map((cell) => cellHtml(cell, di === todayDayIndex && cell.hour === currentHour))
+        .join('');
+      const isToday = di === todayDayIndex;
+      return `
+        <div class="hm-row${isToday ? ' hm-row-today' : ''}">
+          <div class="hm-day-label">${days[di]}</div>
+          ${cellsHtml}
+        </div>`;
+    })
+    .join('');
+
+  // Etiquetas horarias en eje superior
+  const hourLabels = [0, 6, 12, 18]
+    .map((h) => `<span style="left:calc(${(h / 24) * 100}% + 24px)">${h.toString().padStart(2, '0')}h</span>`)
+    .join('');
+
+  return `
+    <div class="card heatmap-card">
+      <h3><span>Patrón semanal</span><small class="card-sub">7d × 24h · pico semanal por hora</small></h3>
+      <div class="hm-axis">${hourLabels}</div>
+      <div class="hm-grid">${rowsHtml}</div>
+      <div class="hm-legend">
+        <span>menos</span>
+        <span class="hm-scale">
+          <i style="background:${COLOR.cardBorder}"></i>
+          <i style="background:${COLOR.ok}88"></i>
+          <i style="background:${COLOR.warn}aa"></i>
+          <i style="background:${COLOR.warnStrong}cc"></i>
+          <i style="background:${COLOR.error}"></i>
+        </span>
+        <span>más</span>
+      </div>
+    </div>`;
+}
+
+function cellHtml(cell: HeatmapCell, isCurrent: boolean): string {
+  const days = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+  if (!cell.hasData) {
+    const title = `${days[cell.dayIndex]} ${cell.hour.toString().padStart(2, '0')}:00 · sin datos`;
+    return `<div class="hm-cell hm-empty${isCurrent ? ' hm-now' : ''}" title="${title}"></div>`;
+  }
+  const pct = cell.utilization;
+  const color = utilizationColor(pct);
+  const opacity = Math.max(0.18, Math.min(1, pct / 100));
+  const title = `${days[cell.dayIndex]} ${cell.hour.toString().padStart(2, '0')}:00 · ${pct.toFixed(1)}%`;
+  return `<div class="hm-cell${isCurrent ? ' hm-now' : ''}" style="background:${color};opacity:${opacity.toFixed(2)}" title="${title}"></div>`;
+}
+
+// ============================================================
+// Activity chart 24h (barras Opus/Sonnet apiladas) — restyle
 // ============================================================
 
 interface HourBucket {
-  hour: number; // 0..23 relative to now (23 = current hour)
-  label: string; // HH:00
-  opus: number; // % points of weekly quota consumidos por Opus/General
-  sonnet: number; // % points consumidos por Sonnet
+  hour: number;
+  label: string;
+  opus: number;
+  sonnet: number;
   hasData: boolean;
 }
 
-// Toma la última utilización registrada en cada hora de las últimas 24h.
-// Devuelve 24 buckets ordenados cronológicamente (el último es "ahora").
 function buildHourBuckets(history: UsageSnapshot[]): HourBucket[] {
   const now = new Date();
   const nowMs = now.getTime();
@@ -257,7 +452,6 @@ function activityChartHtml(history: UsageSnapshot[]): string {
       </div>`;
   }
 
-  // Escala al máximo real de la ventana para visibilizar variación
   const maxTotal = Math.max(...buckets.map((b) => b.opus + b.sonnet), 1);
 
   const barsHtml = buckets
@@ -268,14 +462,12 @@ function activityChartHtml(history: UsageSnapshot[]): string {
       const opusH = (b.opus / maxTotal) * 100;
       const sonnetH = (b.sonnet / maxTotal) * 100;
       const title = `${b.label} · ${(b.opus + b.sonnet).toFixed(1)}% quota (Opus ${b.opus.toFixed(1)} · Sonnet ${b.sonnet.toFixed(1)})`;
-      // Ocultar bars con 0% para evitar slivers de 0px que rompen el gap visual
       const sonnetEl = sonnetH > 0.1 ? `<div class="bar-sonnet" style="height:${sonnetH.toFixed(1)}%"></div>` : '';
       const opusEl = opusH > 0.1 ? `<div class="bar-opus" style="height:${opusH.toFixed(1)}%"></div>` : '';
       return `<div class="bar-group" title="${title}">${sonnetEl}${opusEl}</div>`;
     })
     .join('');
 
-  // Etiquetas cada 4h + "Ahora" al final
   const labels = [0, 4, 8, 12, 16, 20]
     .map((h) => {
       const d = new Date(Date.now() - (23 - h) * 3_600_000);
@@ -295,7 +487,6 @@ function activityChartHtml(history: UsageSnapshot[]): string {
     </div>`;
 }
 
-// Stats chips — pico y promedio de las últimas 24h
 function statsChipsHtml(history: UsageSnapshot[], snapshot: UsageSnapshot | null): string {
   if (history.length === 0 && !snapshot) return '';
 
@@ -303,6 +494,7 @@ function statsChipsHtml(history: UsageSnapshot[], snapshot: UsageSnapshot | null
   const weeklyValues = all.map((s) => s.sevenDay.utilization);
   const peak = Math.max(...weeklyValues, 0);
   const avg = weeklyValues.reduce((a, b) => a + b, 0) / Math.max(1, weeklyValues.length);
+  const sessionPeak = Math.max(...all.map((s) => s.fiveHour.utilization), 0);
 
   return `
     <div class="stat-chips">
@@ -315,6 +507,10 @@ function statsChipsHtml(history: UsageSnapshot[], snapshot: UsageSnapshot | null
         <span class="stat-chip-value" style="color:${COLOR.muted}">${avg.toFixed(1)}%</span>
       </div>
       <div class="stat-chip">
+        <span class="stat-chip-label">Pico sesión</span>
+        <span class="stat-chip-value" style="color:${utilizationColor(sessionPeak)}">${sessionPeak.toFixed(1)}%</span>
+      </div>
+      <div class="stat-chip">
         <span class="stat-chip-label">Lecturas</span>
         <span class="stat-chip-value" style="color:${COLOR.muted}">${all.length}</span>
       </div>
@@ -322,14 +518,14 @@ function statsChipsHtml(history: UsageSnapshot[], snapshot: UsageSnapshot | null
 }
 
 // ============================================================
-// Account card — tabla lateral
+// Account card
 // ============================================================
 
 function accountCardHtml(profile: AccountProfile | null): string {
   if (!profile) {
     return `
       <div class="card account-card">
-        <h3>Cuenta</h3>
+        <h3><span>Cuenta</span></h3>
         <div class="muted">Sin perfil disponible</div>
       </div>`;
   }
@@ -340,7 +536,7 @@ function accountCardHtml(profile: AccountProfile | null): string {
 
   return `
     <div class="card account-card">
-      <h3>Cuenta</h3>
+      <h3><span>Cuenta</span></h3>
       <div class="account-row">
         <span class="label">Nombre</span>
         <span class="value">${escapeHtml(profile.displayName || '—')}</span>
@@ -379,10 +575,10 @@ function accountCardHtml(profile: AccountProfile | null): string {
 }
 
 // ============================================================
-// Header, tabs, status bar
+// Header (con burn rate global)
 // ============================================================
 
-function headerHtml(profile: AccountProfile | null): string {
+function headerHtml(profile: AccountProfile | null, snapshot: UsageSnapshot | null, history: UsageSnapshot[]): string {
   const planChip = profile
     ? `<span class="plan-chip">${escapeHtml(formatPlanName(profile.planType))}${
         profile.tier && profile.tier !== 'default' ? ` · Tier ${escapeHtml(profile.tier)}` : ''
@@ -390,17 +586,46 @@ function headerHtml(profile: AccountProfile | null): string {
     : '';
   const email = profile?.email ? `<span class="email">${escapeHtml(maskEmail(profile.email))}</span>` : '';
 
+  // Burn rate semanal (la métrica más relevante para el plan)
+  const weeklyBurn = calculateBurnRate(history, 'sevenDay', 6);
+  const weeklyProj = snapshot
+    ? projectExhaustion(snapshot.sevenDay.utilization, weeklyBurn.ratePctPerHour, snapshot.sevenDay.resetsAt)
+    : null;
+  const burnColor = severityColor(weeklyProj?.severity ?? 'ok');
+  const burnPill =
+    weeklyBurn.samplesUsed >= 2
+      ? `
+        <div class="burn-pill" style="border-color:${burnColor}55; color:${burnColor}">
+          <span class="burn-icon">🔥</span>
+          <div class="burn-text">
+            <span class="burn-rate">${weeklyBurn.ratePctPerHour >= 0 ? '+' : ''}${weeklyBurn.ratePctPerHour.toFixed(2)}%/h</span>
+            <span class="burn-sub">${
+              weeklyProj?.exhaustsInMs && weeklyProj.beforeReset
+                ? `agota en ${formatDurationCompact(weeklyProj.exhaustsInMs)}`
+                : weeklyBurn.trend === 'falling'
+                  ? 'reseteando'
+                  : 'sin riesgo'
+            }</span>
+          </div>
+        </div>`
+      : '';
+
   return `
     <div class="header">
-      <h1>
-        LLM Usage Dashboard
-        <span class="live-badge">
-          <span class="live-dot"></span>LIVE
-        </span>
-      </h1>
-      <div class="plan-info">
-        ${email}
-        ${planChip}
+      <div class="header-left">
+        <h1>
+          LLM Usage
+          <span class="live-badge">
+            <span class="live-dot"></span>LIVE
+          </span>
+        </h1>
+        <div class="plan-info">
+          ${email}
+          ${planChip}
+        </div>
+      </div>
+      <div class="header-right">
+        ${burnPill}
       </div>
     </div>`;
 }
@@ -441,12 +666,50 @@ function buildHtml(
   history: UsageSnapshot[],
   stats: StorageStats
 ): string {
-  const gaugesHtml = snapshot
+  // Métricas derivadas por ventana
+  const heroes = snapshot
     ? `
-        ${gaugeHtml({ label: 'Session (5h)', utilization: snapshot.fiveHour.utilization, resetsAt: snapshot.fiveHour.resetsAt })}
-        ${gaugeHtml({ label: 'Weekly (7d)', utilization: snapshot.sevenDay.utilization, resetsAt: snapshot.sevenDay.resetsAt })}
-        ${gaugeHtml({ label: 'Weekly Sonnet', utilization: snapshot.sevenDaySonnet.utilization, resetsAt: snapshot.sevenDaySonnet.resetsAt })}
-        ${creditsCardHtml(snapshot)}
+        ${heroKpiCard({
+          label: 'Sesión 5h',
+          utilization: snapshot.fiveHour.utilization,
+          resetsAt: snapshot.fiveHour.resetsAt,
+          sparkline: buildSparkline(history, 'fiveHour', 6),
+          delta: calculateDelta(history, 'fiveHour'),
+          burn: calculateBurnRate(history, 'fiveHour', 3),
+          projection: projectExhaustion(
+            snapshot.fiveHour.utilization,
+            calculateBurnRate(history, 'fiveHour', 3).ratePctPerHour,
+            snapshot.fiveHour.resetsAt
+          ),
+        })}
+        ${heroKpiCard({
+          label: 'Semanal 7d',
+          utilization: snapshot.sevenDay.utilization,
+          resetsAt: snapshot.sevenDay.resetsAt,
+          sparkline: buildSparkline(history, 'sevenDay', 12),
+          delta: calculateDelta(history, 'sevenDay'),
+          burn: calculateBurnRate(history, 'sevenDay', 6),
+          projection: projectExhaustion(
+            snapshot.sevenDay.utilization,
+            calculateBurnRate(history, 'sevenDay', 6).ratePctPerHour,
+            snapshot.sevenDay.resetsAt
+          ),
+        })}
+        ${heroKpiCard({
+          label: 'Sonnet 7d',
+          utilization: snapshot.sevenDaySonnet.utilization,
+          resetsAt: snapshot.sevenDaySonnet.resetsAt,
+          sparkline: buildSparkline(history, 'sevenDaySonnet', 12),
+          delta: calculateDelta(history, 'sevenDaySonnet'),
+          burn: calculateBurnRate(history, 'sevenDaySonnet', 6),
+          projection: projectExhaustion(
+            snapshot.sevenDaySonnet.utilization,
+            calculateBurnRate(history, 'sevenDaySonnet', 6).ratePctPerHour,
+            snapshot.sevenDaySonnet.resetsAt
+          ),
+          accentColor: COLOR.sonnet,
+        })}
+        ${creditsCardHtml(snapshot, history)}
       `
     : `<div class="gauges-empty">Sin datos de uso disponibles. Recopilando...</div>`;
 
@@ -461,14 +724,19 @@ function buildHtml(
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      background: ${COLOR.bg};
+      background:
+        radial-gradient(ellipse 80% 60% at 20% 0%, ${COLOR.accent}15 0%, transparent 60%),
+        radial-gradient(ellipse 80% 60% at 100% 100%, ${COLOR.opus}12 0%, transparent 60%),
+        ${COLOR.bg};
       color: ${COLOR.fg};
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       font-size: 14px;
       min-height: 100vh;
-      padding: 24px 20px 16px;
+      padding: 28px 22px 18px;
+      font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+      -webkit-font-smoothing: antialiased;
     }
-    .container { max-width: 1180px; margin: 0 auto; }
+    .container { max-width: 1240px; margin: 0 auto; }
 
     /* ---------- Header ---------- */
     .header {
@@ -476,187 +744,328 @@ function buildHtml(
       justify-content: space-between;
       align-items: center;
       flex-wrap: wrap;
-      gap: 12px;
-      margin-bottom: 20px;
+      gap: 14px;
+      margin-bottom: 22px;
     }
+    .header-left { display: flex; flex-direction: column; gap: 6px; }
     .header h1 {
-      font-size: 20px;
-      font-weight: 600;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 12px;
     }
     .live-badge {
-      background: ${COLOR.ok};
+      background: linear-gradient(135deg, ${COLOR.ok}, ${COLOR.ok}cc);
       color: ${COLOR.bg};
-      font-size: 10px;
+      font-size: 9px;
       padding: 3px 9px;
       border-radius: 999px;
-      font-weight: 700;
-      letter-spacing: 0.06em;
+      font-weight: 800;
+      letter-spacing: 0.1em;
       display: inline-flex;
       align-items: center;
       gap: 5px;
+      box-shadow: 0 2px 12px ${COLOR.ok}44;
     }
     .live-dot {
-      width: 6px; height: 6px; border-radius: 50%;
+      width: 5px; height: 5px; border-radius: 50%;
       background: ${COLOR.bg};
       animation: pulse 2s infinite;
     }
-    .plan-info { display: flex; align-items: center; gap: 12px; font-size: 13px; color: ${COLOR.muted}; }
+    .plan-info { display: flex; align-items: center; gap: 10px; font-size: 12px; color: ${COLOR.muted}; }
     .plan-info .email { font-variant-numeric: tabular-nums; }
     .plan-chip {
-      background: ${COLOR.accent}22;
+      background: linear-gradient(135deg, ${COLOR.accent}22, ${COLOR.accent}11);
       border: 1px solid ${COLOR.accent}55;
       color: ${COLOR.accent};
-      padding: 4px 12px;
-      border-radius: 8px;
-      font-size: 12px;
-      font-weight: 500;
+      padding: 3px 11px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
     }
 
+    /* Burn pill grande del header */
+    .burn-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 18px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, ${COLOR.card}aa, ${COLOR.card}55);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid ${COLOR.cardBorder};
+      box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+    }
+    .burn-icon { font-size: 20px; line-height: 1; filter: drop-shadow(0 0 6px ${COLOR.warnStrong}88); }
+    .burn-text { display: flex; flex-direction: column; line-height: 1.15; }
+    .burn-rate { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+    .burn-sub { font-size: 10px; color: ${COLOR.mutedDim}; text-transform: lowercase; }
+
     /* ---------- Provider tabs ---------- */
-    .provider-tabs { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+    .provider-tabs { display: flex; gap: 8px; margin-bottom: 22px; flex-wrap: wrap; }
     .provider-tab {
       padding: 7px 14px;
-      border-radius: 8px;
-      font-size: 13px;
+      border-radius: 10px;
+      font-size: 12px;
       font-weight: 500;
       border: 1px solid ${COLOR.border};
-      background: transparent;
+      background: ${COLOR.card}55;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
       color: ${COLOR.muted};
       display: flex; align-items: center; gap: 8px;
+      transition: all 0.2s;
     }
-    .provider-tab small { font-size: 11px; opacity: 0.8; }
+    .provider-tab small { font-size: 10px; opacity: 0.8; }
     .provider-tab.active {
-      background: ${COLOR.accent}22;
-      border-color: ${COLOR.accent};
+      background: linear-gradient(135deg, ${COLOR.accent}33, ${COLOR.accent}11);
+      border-color: ${COLOR.accent}aa;
       color: ${COLOR.accent};
+      box-shadow: 0 2px 12px ${COLOR.accent}22;
     }
     .provider-tab.disabled { opacity: 0.45; }
     .tab-dot { width: 6px; height: 6px; border-radius: 50%; background: ${COLOR.mutedDim}; }
-    .provider-tab.active .tab-dot { background: ${COLOR.ok}; box-shadow: 0 0 4px ${COLOR.ok}; }
+    .provider-tab.active .tab-dot { background: ${COLOR.ok}; box-shadow: 0 0 6px ${COLOR.ok}; }
 
-    /* ---------- Gauges row ---------- */
+    /* ---------- Hero KPI cards ---------- */
     .gauges-row {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
       gap: 14px;
-      margin-bottom: 20px;
+      margin-bottom: 18px;
     }
     .gauges-empty {
       grid-column: 1 / -1;
-      background: ${COLOR.card};
+      background: ${COLOR.card}66;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
       border: 1px solid ${COLOR.cardBorder};
-      border-radius: 12px;
-      padding: 32px;
+      border-radius: 14px;
+      padding: 36px;
       text-align: center;
       color: ${COLOR.mutedDim};
       font-style: italic;
     }
-    .gauge-card {
-      background: ${COLOR.card};
-      border: 1px solid ${COLOR.cardBorder};
-      border-radius: 12px;
-      padding: 18px 16px;
-      text-align: center;
-      transition: border-color 0.2s;
+    .hero-card {
+      background: linear-gradient(135deg, ${COLOR.card}99 0%, ${COLOR.card}55 100%);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(205,214,244,0.08);
+      border-radius: 16px;
+      padding: 16px 16px 14px;
+      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      position: relative;
+      overflow: hidden;
     }
-    .gauge-card:hover { border-color: ${COLOR.accent}; }
-    .gauge-circle { width: 100px; height: 100px; margin: 0 auto 10px; position: relative; }
-    .gauge-circle svg { transform: rotate(-90deg); width: 100px; height: 100px; }
-    .gauge-bg { fill: none; stroke: ${COLOR.cardBorder}; stroke-width: 8; }
+    .hero-card::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(135deg, transparent 60%, rgba(255,255,255,0.025));
+      pointer-events: none;
+    }
+    .hero-card:hover {
+      border-color: ${COLOR.accent}55;
+      transform: translateY(-1px);
+      box-shadow: 0 8px 28px ${COLOR.accent}18;
+    }
+    .hero-top {
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .hero-label { font-size: 12px; color: ${COLOR.muted}; font-weight: 600; letter-spacing: 0.01em; }
+    .hero-mid {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    }
+    .gauge-circle { width: 86px; height: 86px; position: relative; flex-shrink: 0; }
+    .gauge-circle svg { transform: rotate(-90deg); width: 86px; height: 86px; }
+    .gauge-bg { fill: none; stroke: ${COLOR.cardBorder}77; stroke-width: 8; }
     .gauge-fill {
       fill: none;
       stroke-width: 8;
       stroke-linecap: round;
-      transition: stroke-dashoffset 0.5s ease;
+      transition: stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+      filter: drop-shadow(0 0 4px currentColor);
     }
     .gauge-value {
       position: absolute; top: 50%; left: 50%;
       transform: translate(-50%, -50%);
-      font-size: 22px;
       font-weight: 700;
       font-variant-numeric: tabular-nums;
-    }
-    .gauge-label { font-size: 13px; color: ${COLOR.muted}; margin-bottom: 4px; font-weight: 500; }
-    .gauge-reset { font-size: 11px; color: ${COLOR.mutedDim}; }
-
-    /* ---------- Credits card ---------- */
-    .credits-card {
-      text-align: left;
+      line-height: 1;
+      letter-spacing: -0.02em;
       display: flex;
-      flex-direction: column;
-      justify-content: center;
-      padding: 18px 18px;
+      align-items: baseline;
     }
-    .credits-header { font-size: 13px; color: ${COLOR.muted}; margin-bottom: 6px; }
-    .credits-amount {
-      font-size: 28px;
+    .gauge-pct { font-size: 22px; }
+    .gauge-pct-sym { font-size: 12px; opacity: 0.7; margin-left: 1px; }
+    .hero-spark { flex: 1; display: flex; justify-content: flex-end; align-items: flex-end; min-width: 0; }
+    .sparkline { display: block; opacity: 0.85; }
+    .hero-foot {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 10px;
+      color: ${COLOR.mutedDim};
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.01em;
+    }
+    .hero-burn { color: ${COLOR.muted}; font-weight: 600; }
+    .hero-projection {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 10px;
+      font-weight: 500;
+      padding-top: 6px;
+      border-top: 1px solid ${COLOR.cardBorder}55;
+      letter-spacing: 0.01em;
+    }
+    .proj-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      box-shadow: 0 0 4px currentColor;
+    }
+    .delta {
+      font-size: 10px; font-weight: 600;
+      padding: 2px 6px; border-radius: 6px;
+      font-variant-numeric: tabular-nums;
+    }
+    .delta-up { background: ${COLOR.error}22; color: ${COLOR.error}; }
+    .delta-down { background: ${COLOR.ok}22; color: ${COLOR.ok}; }
+    .delta-flat { background: ${COLOR.cardBorder}55; color: ${COLOR.mutedDim}; }
+
+    /* ---------- Credits card variant ---------- */
+    .credits-card .credits-amount {
+      font-size: 26px;
       font-weight: 700;
       color: ${COLOR.ok};
       line-height: 1.1;
-      margin-bottom: 3px;
+      letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
     }
-    .credits-amount.muted { color: ${COLOR.mutedDim}; font-size: 22px; }
-    .credits-sub { font-size: 12px; color: ${COLOR.muted}; margin-bottom: 12px; }
+    .credits-card .credits-amount.muted { color: ${COLOR.mutedDim}; font-size: 22px; }
+    .credits-card .credits-sub { font-size: 11px; color: ${COLOR.muted}; }
     .credits-bar {
       height: 6px;
-      background: ${COLOR.cardBorder};
+      background: ${COLOR.cardBorder}66;
       border-radius: 3px;
       overflow: hidden;
-      margin-bottom: 6px;
+      margin-top: 4px;
     }
     .credits-bar-fill {
       height: 100%;
-      background: ${COLOR.ok};
+      background: linear-gradient(90deg, ${COLOR.ok}, ${COLOR.warn});
       border-radius: 3px;
-      transition: width 0.4s ease;
+      transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 0 8px ${COLOR.ok}66;
     }
-    .credits-pct { font-size: 11px; color: ${COLOR.mutedDim}; }
     .credits-card.disabled { opacity: 0.55; }
 
-    /* ---------- Charts row ---------- */
-    .charts-row {
+    /* ---------- Generic card ---------- */
+    .card {
+      background: linear-gradient(135deg, ${COLOR.card}99 0%, ${COLOR.card}55 100%);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(205,214,244,0.08);
+      border-radius: 16px;
+      padding: 18px 20px;
+      position: relative;
+    }
+    .card h3 {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 14px;
+      color: ${COLOR.fg};
+      display: flex; justify-content: space-between; align-items: baseline;
+      letter-spacing: -0.01em;
+    }
+    .card-sub { font-size: 10px; color: ${COLOR.mutedDim}; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; }
+
+    /* ---------- Heatmap row ---------- */
+    .heatmap-row {
       display: grid;
       grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
       gap: 14px;
       margin-bottom: 18px;
     }
-    .card {
-      background: ${COLOR.card};
-      border: 1px solid ${COLOR.cardBorder};
-      border-radius: 12px;
-      padding: 18px 20px;
+    .heatmap-card { padding: 18px 22px 22px; }
+    .hm-axis {
+      position: relative;
+      height: 14px;
+      margin-bottom: 6px;
+      font-size: 9px;
+      color: ${COLOR.mutedDim};
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
-    .card h3 {
-      font-size: 14px;
-      font-weight: 600;
-      margin-bottom: 14px;
-      color: ${COLOR.fg};
-      display: flex; justify-content: space-between; align-items: baseline;
+    .hm-axis span { position: absolute; }
+    .hm-grid { display: flex; flex-direction: column; gap: 3px; }
+    .hm-row {
+      display: grid;
+      grid-template-columns: 24px repeat(24, minmax(0, 1fr));
+      gap: 3px;
+      align-items: center;
     }
+    .hm-row-today .hm-day-label { color: ${COLOR.accent}; font-weight: 700; }
+    .hm-day-label {
+      font-size: 10px;
+      color: ${COLOR.mutedDim};
+      text-align: right;
+      padding-right: 4px;
+      letter-spacing: 0.02em;
+    }
+    .hm-cell {
+      height: 14px;
+      border-radius: 3px;
+      cursor: default;
+      transition: all 0.15s;
+    }
+    .hm-cell:hover { transform: scale(1.4); z-index: 1; box-shadow: 0 0 8px rgba(0,0,0,0.4); }
+    .hm-empty { background: ${COLOR.cardBorder}55; opacity: 0.5; }
+    .hm-now { outline: 1.5px solid ${COLOR.accent}; outline-offset: 1px; }
+    .hm-legend {
+      display: flex; align-items: center; gap: 8px;
+      margin-top: 14px;
+      font-size: 10px;
+      color: ${COLOR.mutedDim};
+      justify-content: flex-end;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .hm-scale { display: inline-flex; gap: 2px; }
+    .hm-scale i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; }
 
+    /* ---------- Charts row ---------- */
+    .charts-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 14px;
+      margin-bottom: 18px;
+    }
     .stat-chips { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
     .stat-chip {
       display: flex; flex-direction: column;
-      padding: 6px 12px;
-      background: ${COLOR.bg};
-      border: 1px solid ${COLOR.cardBorder};
-      border-radius: 8px;
-      min-width: 80px;
+      padding: 7px 13px;
+      background: ${COLOR.bg}88;
+      border: 1px solid ${COLOR.cardBorder}55;
+      border-radius: 10px;
+      min-width: 88px;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
     }
-    .stat-chip-label { font-size: 10px; color: ${COLOR.mutedDim}; text-transform: uppercase; letter-spacing: 0.05em; }
-    .stat-chip-value { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .stat-chip-label { font-size: 9px; color: ${COLOR.mutedDim}; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+    .stat-chip-value { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; margin-top: 2px; }
 
-    .chart-wrap {}
     .chart-bars {
       height: 180px;
       display: flex;
       align-items: flex-end;
       gap: 3px;
       padding-bottom: 4px;
-      border-bottom: 1px solid ${COLOR.cardBorder};
+      border-bottom: 1px solid ${COLOR.cardBorder}77;
     }
     .bar-group {
       flex: 1;
@@ -665,7 +1074,7 @@ function buildHtml(
       flex-direction: column;
       justify-content: flex-end;
       min-width: 6px;
-      border-radius: 3px 3px 0 0;
+      border-radius: 4px 4px 0 0;
       overflow: hidden;
       background: transparent;
     }
@@ -680,14 +1089,14 @@ function buildHtml(
       opacity: 0.35;
     }
     .bar-opus {
-      background: ${COLOR.opus};
+      background: linear-gradient(180deg, ${COLOR.opus}, ${COLOR.opus}aa);
       width: 100%;
-      transition: height 0.3s;
+      transition: height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
     }
     .bar-sonnet {
-      background: ${COLOR.sonnet};
+      background: linear-gradient(180deg, ${COLOR.sonnet}, ${COLOR.sonnet}aa);
       width: 100%;
-      transition: height 0.3s;
+      transition: height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
     }
     .chart-axis {
       display: flex;
@@ -699,9 +1108,9 @@ function buildHtml(
     }
     .chart-axis .label-now { color: ${COLOR.accent}; font-weight: 600; }
     .chart-legend {
-      display: flex; gap: 18px; margin-top: 12px; font-size: 12px; color: ${COLOR.muted};
+      display: flex; gap: 18px; margin-top: 12px; font-size: 11px; color: ${COLOR.muted};
     }
-    .chart-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+    .chart-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; box-shadow: 0 0 4px currentColor; }
     .chart-empty {
       height: 180px;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -717,17 +1126,17 @@ function buildHtml(
       justify-content: space-between;
       align-items: center;
       padding: 7px 0;
-      font-size: 13px;
-      border-bottom: 1px solid ${COLOR.cardBorder}44;
+      font-size: 12px;
+      border-bottom: 1px solid ${COLOR.cardBorder}33;
     }
     .account-card .account-row:last-child { border-bottom: none; }
     .account-card .account-row.divider {
-      border-top: 1px solid ${COLOR.cardBorder};
+      border-top: 1px solid ${COLOR.cardBorder}77;
       margin-top: 6px;
       padding-top: 10px;
     }
     .account-card .label { color: ${COLOR.muted}; }
-    .account-card .value { color: ${COLOR.fg}; font-weight: 500; font-variant-numeric: tabular-nums; }
+    .account-card .value { color: ${COLOR.fg}; font-weight: 600; font-variant-numeric: tabular-nums; }
     .muted { color: ${COLOR.mutedDim}; font-style: italic; font-size: 13px; }
 
     /* ---------- Status bar ---------- */
@@ -735,57 +1144,64 @@ function buildHtml(
       display: flex;
       justify-content: space-between;
       align-items: center;
-      font-size: 11px;
+      font-size: 10px;
       color: ${COLOR.mutedDim};
-      padding-top: 12px;
-      border-top: 1px solid ${COLOR.cardBorder};
+      padding-top: 14px;
+      border-top: 1px solid ${COLOR.cardBorder}55;
       flex-wrap: wrap;
       gap: 8px;
+      letter-spacing: 0.02em;
     }
     .status-bar .live { display: flex; align-items: center; gap: 6px; }
     .pulse {
       width: 6px; height: 6px; border-radius: 50%;
       background: ${COLOR.ok};
-      box-shadow: 0 0 4px ${COLOR.ok};
+      box-shadow: 0 0 6px ${COLOR.ok};
       animation: pulse 2s infinite;
     }
 
     @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.3; }
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
     }
 
     /* ---------- Responsive ---------- */
-    @media (max-width: 900px) {
+    @media (max-width: 1100px) {
       .gauges-row { grid-template-columns: repeat(2, 1fr); }
-      .charts-row { grid-template-columns: 1fr; }
+      .heatmap-row { grid-template-columns: 1fr; }
     }
-    @media (max-width: 520px) {
+    @media (max-width: 560px) {
       .gauges-row { grid-template-columns: 1fr; }
       .header { flex-direction: column; align-items: flex-start; }
       .plan-info { flex-wrap: wrap; }
+      .hm-row { grid-template-columns: 22px repeat(24, minmax(0, 1fr)); }
+      .hm-day-label { font-size: 9px; }
     }
   </style>
 </head>
 <body>
   <div class="container">
-    ${headerHtml(profile)}
+    ${headerHtml(profile, snapshot, history)}
     ${providerTabsHtml()}
 
     <div class="gauges-row">
-      ${gaugesHtml}
+      ${heroes}
+    </div>
+
+    <div class="heatmap-row">
+      ${heatmapHtml(history)}
+      ${accountCardHtml(profile)}
     </div>
 
     <div class="charts-row">
       <div class="card">
         <h3>
           <span>Actividad últimas 24h</span>
+          <small class="card-sub">utilización por hora · Opus + Sonnet apilado</small>
         </h3>
         ${statsChipsHtml(history, snapshot)}
         ${activityChartHtml(history)}
       </div>
-
-      ${accountCardHtml(profile)}
     </div>
 
     ${statusBarHtml(stats)}
