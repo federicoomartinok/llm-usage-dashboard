@@ -389,48 +389,68 @@ function cellHtml(cell: HeatmapCell, isCurrent: boolean): string {
 // Activity chart 24h (barras Opus/Sonnet apiladas) — restyle
 // ============================================================
 
-interface HourBucket {
+interface DeltaBucket {
   hour: number;
   label: string;
-  opus: number;
-  sonnet: number;
+  deltaTotal: number;   // % de cuota 7d consumido en esa hora
+  deltaSonnet: number;  // % atribuible a Sonnet
   hasData: boolean;
 }
 
-function buildHourBuckets(history: UsageSnapshot[]): HourBucket[] {
-  const now = new Date();
-  const nowMs = now.getTime();
-  const buckets: HourBucket[] = [];
+// Deltas por hora: cada bucket muestra cuánto subió el acumulado 7d en esa hora.
+// Si la cuota se reseteó (valor baja), el delta se clampa a 0.
+function buildDeltaBuckets(history: UsageSnapshot[]): DeltaBucket[] {
+  const now = Date.now();
+  const cumulative: Array<{ hour: number; label: string; total: number; sonnet: number; hasData: boolean }> = [];
 
   for (let i = 23; i >= 0; i--) {
-    const bucketStart = nowMs - (i + 1) * 3_600_000;
-    const bucketEnd = nowMs - i * 3_600_000;
+    const bucketStart = now - (i + 1) * 3_600_000;
+    const bucketEnd = now - i * 3_600_000;
     const inBucket = history.filter((s) => {
       const t = new Date(s.timestamp).getTime();
       return t >= bucketStart && t < bucketEnd;
     });
-
     const last = inBucket[inBucket.length - 1];
-    const labelDate = new Date(bucketEnd);
-    const label = `${labelDate.getHours().toString().padStart(2, '0')}:00`;
+    const label = `${new Date(bucketEnd).getHours().toString().padStart(2, '0')}:00`;
 
-    if (!last) {
-      buckets.push({ hour: 23 - i, label, opus: 0, sonnet: 0, hasData: false });
-      continue;
-    }
-
-    const weekly = last.sevenDay.utilization;
-    const sonnet = last.sevenDaySonnet.utilization;
-    const opus = Math.max(0, weekly - sonnet);
-    buckets.push({ hour: 23 - i, label, opus, sonnet, hasData: true });
+    cumulative.push(
+      last
+        ? { hour: 23 - i, label, total: last.sevenDay.utilization, sonnet: last.sevenDaySonnet.utilization, hasData: true }
+        : { hour: 23 - i, label, total: 0, sonnet: 0, hasData: false }
+    );
   }
 
-  return buckets;
+  // Referencia inicial: último snapshot anterior a la ventana 24h
+  const windowStart = now - 24 * 3_600_000;
+  const before = history.filter((s) => new Date(s.timestamp).getTime() < windowStart);
+  const lastBefore = before[before.length - 1];
+  let prevTotal: number | null = lastBefore?.sevenDay.utilization ?? null;
+  let prevSonnet: number | null = lastBefore?.sevenDaySonnet.utilization ?? null;
+
+  return cumulative.map((b) => {
+    if (!b.hasData) {
+      return { hour: b.hour, label: b.label, deltaTotal: 0, deltaSonnet: 0, hasData: false };
+    }
+    const dT = prevTotal === null ? 0 : Math.max(0, b.total - prevTotal);
+    const dS = prevSonnet === null ? 0 : Math.max(0, b.sonnet - prevSonnet);
+    prevTotal = b.total;
+    prevSonnet = b.sonnet;
+    return { hour: b.hour, label: b.label, deltaTotal: dT, deltaSonnet: dS, hasData: true };
+  });
+}
+
+function deltaColor(d: number): string {
+  if (d >= 0.6) return COLOR.error;
+  if (d >= 0.3) return COLOR.warnStrong;
+  if (d >= 0.15) return COLOR.warn;
+  if (d > 0) return COLOR.ok;
+  return COLOR.cardBorder;
 }
 
 function activityChartHtml(history: UsageSnapshot[]): string {
-  const buckets = buildHourBuckets(history);
+  const buckets = buildDeltaBuckets(history);
   const hasAnyData = buckets.some((b) => b.hasData);
+  const hasAnyDelta = buckets.some((b) => b.deltaTotal > 0.005);
 
   if (!hasAnyData) {
     return `
@@ -441,19 +461,21 @@ function activityChartHtml(history: UsageSnapshot[]): string {
       </div>`;
   }
 
-  const maxTotal = Math.max(...buckets.map((b) => b.opus + b.sonnet), 1);
+  const maxDelta = Math.max(...buckets.map((b) => b.deltaTotal), 0.1);
 
   const barsHtml = buckets
     .map((b) => {
       if (!b.hasData) {
         return `<div class="bar-group empty" title="${b.label} · sin datos"></div>`;
       }
-      const opusH = (b.opus / maxTotal) * 100;
-      const sonnetH = (b.sonnet / maxTotal) * 100;
-      const title = `${b.label} · ${(b.opus + b.sonnet).toFixed(1)}% quota (Opus ${b.opus.toFixed(1)} · Sonnet ${b.sonnet.toFixed(1)})`;
-      const sonnetEl = sonnetH > 0.1 ? `<div class="bar-sonnet" style="height:${sonnetH.toFixed(1)}%"></div>` : '';
-      const opusEl = opusH > 0.1 ? `<div class="bar-opus" style="height:${opusH.toFixed(1)}%"></div>` : '';
-      return `<div class="bar-group" title="${title}">${sonnetEl}${opusEl}</div>`;
+      if (b.deltaTotal <= 0.005) {
+        return `<div class="bar-group" title="${b.label} · sin consumo"></div>`;
+      }
+      const h = (b.deltaTotal / maxDelta) * 100;
+      const color = deltaColor(b.deltaTotal);
+      const glow = b.deltaTotal >= 0.3 ? `box-shadow:0 0 6px ${color}66;` : '';
+      const title = `${b.label} · +${b.deltaTotal.toFixed(2)}% (Sonnet +${b.deltaSonnet.toFixed(2)}%)`;
+      return `<div class="bar-group" title="${title}"><div class="bar-delta" style="height:${h.toFixed(1)}%;background:linear-gradient(180deg,${color},${color}aa);${glow}"></div></div>`;
     })
     .join('');
 
@@ -465,14 +487,25 @@ function activityChartHtml(history: UsageSnapshot[]): string {
     .concat(['<span class="label-now">Ahora</span>'])
     .join('');
 
+  const legendHtml = hasAnyDelta
+    ? `
+      <div class="chart-legend">
+        <span class="chart-legend-label">intensidad</span>
+        <span><i class="dot" style="background:${COLOR.ok}"></i>baja</span>
+        <span><i class="dot" style="background:${COLOR.warn}"></i>media</span>
+        <span><i class="dot" style="background:${COLOR.warnStrong}"></i>alta</span>
+        <span><i class="dot" style="background:${COLOR.error}"></i>pico</span>
+      </div>`
+    : `
+      <div class="chart-legend">
+        <span class="chart-legend-label">sin consumo en esta ventana</span>
+      </div>`;
+
   return `
     <div class="chart-wrap">
       <div class="chart-bars">${barsHtml}</div>
       <div class="chart-axis">${labels}</div>
-      <div class="chart-legend">
-        <span><i class="dot" style="background:${COLOR.opus}"></i>Opus / General</span>
-        <span><i class="dot" style="background:${COLOR.sonnet}"></i>Sonnet</span>
-      </div>
+      ${legendHtml}
     </div>`;
 }
 
@@ -1006,16 +1039,13 @@ function buildHtml(
       );
       opacity: 0.35;
     }
-    .bar-opus {
-      background: linear-gradient(180deg, ${COLOR.opus}, ${COLOR.opus}aa);
+    .bar-delta {
       width: 100%;
-      transition: height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+      border-radius: 4px 4px 0 0;
+      transition: height 0.4s cubic-bezier(0.4, 0, 0.2, 1), filter 0.15s;
     }
-    .bar-sonnet {
-      background: linear-gradient(180deg, ${COLOR.sonnet}, ${COLOR.sonnet}aa);
-      width: 100%;
-      transition: height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-    }
+    .bar-group:hover .bar-delta { filter: brightness(1.25); }
+    .chart-legend-label { text-transform: uppercase; font-size: 9px; letter-spacing: 0.06em; color: ${COLOR.mutedDim}; font-weight: 600; }
     .chart-axis {
       display: flex;
       justify-content: space-between;
@@ -1096,7 +1126,7 @@ function buildHtml(
       <div class="card">
         <h3>
           <span>Actividad últimas 24h</span>
-          <small class="card-sub">utilización por hora · Opus + Sonnet apilado</small>
+          <small class="card-sub">% de cuota 7d consumido por hora · color = intensidad</small>
         </h3>
         ${statsChipsHtml(history, snapshot)}
         ${activityChartHtml(history)}
