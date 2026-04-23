@@ -466,14 +466,14 @@ function activityChartHtml(history: UsageSnapshot[]): string {
       }
       const totalH = (b.deltaTotal / maxDelta) * 100;
       const sonnetPortion = b.deltaTotal > 0 ? b.deltaSonnet / b.deltaTotal : 0;
-      const sonnetH = totalH * sonnetPortion;
-      const opusH = totalH * (1 - sonnetPortion);
+      const sonnetPct = (sonnetPortion * 100).toFixed(1);
+      const opusPct = ((1 - sonnetPortion) * 100).toFixed(1);
       const opusDelta = Math.max(0, b.deltaTotal - b.deltaSonnet);
       const glow = b.deltaTotal >= 0.3 ? `box-shadow:0 0 6px ${COLOR.accent}55;` : '';
       const title = `${b.label} · +${b.deltaTotal.toFixed(2)}% total (Opus +${opusDelta.toFixed(2)} · Sonnet +${b.deltaSonnet.toFixed(2)})`;
-      const sonnetEl = sonnetH > 0.1 ? `<div class="bar-sonnet" style="height:${sonnetH.toFixed(1)}%"></div>` : '';
-      const opusEl = opusH > 0.1 ? `<div class="bar-opus" style="height:${opusH.toFixed(1)}%"></div>` : '';
-      return `<div class="bar-group" style="${glow}" title="${title}">${sonnetEl}${opusEl}</div>`;
+      const sonnetEl = sonnetPortion > 0.005 ? `<div class="bar-sonnet" style="height:${sonnetPct}%"></div>` : '';
+      const opusEl = sonnetPortion < 0.995 ? `<div class="bar-opus" style="height:${opusPct}%"></div>` : '';
+      return `<div class="bar-group" title="${title}"><div class="bar-stack" style="height:${totalH.toFixed(1)}%;${glow}">${sonnetEl}${opusEl}</div></div>`;
     })
     .join('');
 
@@ -1020,9 +1020,15 @@ function buildHtml(
       flex-direction: column;
       justify-content: flex-end;
       min-width: 6px;
+      background: transparent;
+    }
+    .bar-stack {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
       border-radius: 4px 4px 0 0;
       overflow: hidden;
-      background: transparent;
+      transition: height 0.4s cubic-bezier(0.4, 0, 0.2, 1);
     }
     .bar-group.empty {
       height: 4px;
