@@ -439,13 +439,6 @@ function buildDeltaBuckets(history: UsageSnapshot[]): DeltaBucket[] {
   });
 }
 
-function deltaColor(d: number): string {
-  if (d >= 0.6) return COLOR.error;
-  if (d >= 0.3) return COLOR.warnStrong;
-  if (d >= 0.15) return COLOR.warn;
-  if (d > 0) return COLOR.ok;
-  return COLOR.cardBorder;
-}
 
 function activityChartHtml(history: UsageSnapshot[]): string {
   const buckets = buildDeltaBuckets(history);
@@ -471,11 +464,16 @@ function activityChartHtml(history: UsageSnapshot[]): string {
       if (b.deltaTotal <= 0.005) {
         return `<div class="bar-group" title="${b.label} · sin consumo"></div>`;
       }
-      const h = (b.deltaTotal / maxDelta) * 100;
-      const color = deltaColor(b.deltaTotal);
-      const glow = b.deltaTotal >= 0.3 ? `box-shadow:0 0 6px ${color}66;` : '';
-      const title = `${b.label} · +${b.deltaTotal.toFixed(2)}% (Sonnet +${b.deltaSonnet.toFixed(2)}%)`;
-      return `<div class="bar-group" title="${title}"><div class="bar-delta" style="height:${h.toFixed(1)}%;background:linear-gradient(180deg,${color},${color}aa);${glow}"></div></div>`;
+      const totalH = (b.deltaTotal / maxDelta) * 100;
+      const sonnetPortion = b.deltaTotal > 0 ? b.deltaSonnet / b.deltaTotal : 0;
+      const sonnetH = totalH * sonnetPortion;
+      const opusH = totalH * (1 - sonnetPortion);
+      const opusDelta = Math.max(0, b.deltaTotal - b.deltaSonnet);
+      const glow = b.deltaTotal >= 0.3 ? `box-shadow:0 0 6px ${COLOR.accent}55;` : '';
+      const title = `${b.label} · +${b.deltaTotal.toFixed(2)}% total (Opus +${opusDelta.toFixed(2)} · Sonnet +${b.deltaSonnet.toFixed(2)})`;
+      const sonnetEl = sonnetH > 0.1 ? `<div class="bar-sonnet" style="height:${sonnetH.toFixed(1)}%"></div>` : '';
+      const opusEl = opusH > 0.1 ? `<div class="bar-opus" style="height:${opusH.toFixed(1)}%"></div>` : '';
+      return `<div class="bar-group" style="${glow}" title="${title}">${sonnetEl}${opusEl}</div>`;
     })
     .join('');
 
@@ -490,11 +488,8 @@ function activityChartHtml(history: UsageSnapshot[]): string {
   const legendHtml = hasAnyDelta
     ? `
       <div class="chart-legend">
-        <span class="chart-legend-label">intensidad</span>
-        <span><i class="dot" style="background:${COLOR.ok}"></i>baja</span>
-        <span><i class="dot" style="background:${COLOR.warn}"></i>media</span>
-        <span><i class="dot" style="background:${COLOR.warnStrong}"></i>alta</span>
-        <span><i class="dot" style="background:${COLOR.error}"></i>pico</span>
+        <span><i class="dot" style="background:${COLOR.opus}"></i>Opus / General</span>
+        <span><i class="dot" style="background:${COLOR.sonnet}"></i>Sonnet</span>
       </div>`
     : `
       <div class="chart-legend">
@@ -1039,12 +1034,18 @@ function buildHtml(
       );
       opacity: 0.35;
     }
-    .bar-delta {
+    .bar-opus {
+      background: linear-gradient(180deg, ${COLOR.opus}, ${COLOR.opus}aa);
       width: 100%;
-      border-radius: 4px 4px 0 0;
       transition: height 0.4s cubic-bezier(0.4, 0, 0.2, 1), filter 0.15s;
     }
-    .bar-group:hover .bar-delta { filter: brightness(1.25); }
+    .bar-sonnet {
+      background: linear-gradient(180deg, ${COLOR.sonnet}, ${COLOR.sonnet}aa);
+      width: 100%;
+      transition: height 0.4s cubic-bezier(0.4, 0, 0.2, 1), filter 0.15s;
+    }
+    .bar-group:hover .bar-opus,
+    .bar-group:hover .bar-sonnet { filter: brightness(1.25); }
     .chart-legend-label { text-transform: uppercase; font-size: 9px; letter-spacing: 0.06em; color: ${COLOR.mutedDim}; font-weight: 600; }
     .chart-axis {
       display: flex;
@@ -1126,7 +1127,7 @@ function buildHtml(
       <div class="card">
         <h3>
           <span>Actividad últimas 24h</span>
-          <small class="card-sub">% de cuota 7d consumido por hora · color = intensidad</small>
+          <small class="card-sub">% de cuota 7d consumido por hora · Opus + Sonnet apilado</small>
         </h3>
         ${statsChipsHtml(history, snapshot)}
         ${activityChartHtml(history)}
