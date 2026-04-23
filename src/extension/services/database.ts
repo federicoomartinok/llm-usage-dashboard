@@ -6,6 +6,19 @@ interface PersistedData {
   profile: AccountProfile | null;
 }
 
+// Corrige snapshots guardados antes del fix de centavos→USD (monthlyLimit > 500 implica centavos)
+function migrateSnapshot(s: UsageSnapshot): UsageSnapshot {
+  if (s.extraUsage.monthlyLimit <= 500) return s;
+  return {
+    ...s,
+    extraUsage: {
+      ...s.extraUsage,
+      monthlyLimit: s.extraUsage.monthlyLimit / 100,
+      usedCredits: s.extraUsage.usedCredits / 100,
+    },
+  };
+}
+
 // Store en memoria con persistencia JSON — sin WASM ni dependencias nativas
 export class DatabaseService {
   private snapshots: UsageSnapshot[] = [];
@@ -21,7 +34,7 @@ export class DatabaseService {
     try {
       const raw = readFileSync(this.dbPath, 'utf-8');
       const data = JSON.parse(raw) as PersistedData;
-      this.snapshots = data.snapshots ?? [];
+      this.snapshots = (data.snapshots ?? []).map(migrateSnapshot);
       this.profile = data.profile ?? null;
     } catch {
       // Archivo no existe aún — se creará al primer guardado
