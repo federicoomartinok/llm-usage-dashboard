@@ -10,6 +10,7 @@ import { AnthropicProvider } from './providers/anthropic';
 import { HtmlExporter } from './services/html-exporter';
 import { PanelProvider } from './webview/panel-provider';
 import type { UsageSnapshot } from './providers/types';
+import { formatDurationCompact } from './services/metrics-calculator';
 
 let poller: PollerService | null = null;
 let database: DatabaseService | null = null;
@@ -144,6 +145,13 @@ export function deactivate(): void {
   database?.close();
 }
 
+function tooltipCountdown(resetsAt: string | null): string {
+  if (!resetsAt) return '—';
+  const diff = new Date(resetsAt).getTime() - Date.now();
+  if (diff <= 0) return 'reiniciando';
+  return formatDurationCompact(diff);
+}
+
 function buildTooltip(snapshot: UsageSnapshot | null): vscode.MarkdownString {
   const md = new vscode.MarkdownString('', true);
   md.isTrusted = true;
@@ -160,14 +168,16 @@ function buildTooltip(snapshot: UsageSnapshot | null): vscode.MarkdownString {
   const week = snapshot.sevenDay.utilization.toFixed(1);
   const sonnet = snapshot.sevenDaySonnet.utilization.toFixed(1);
   const credits = snapshot.extraUsage.usedCredits.toFixed(2);
-  const limit = snapshot.extraUsage.monthlyLimit;
+  const limit = snapshot.extraUsage.monthlyLimit.toFixed(2);
+  const sessionReset = tooltipCountdown(snapshot.fiveHour.resetsAt);
+  const weekReset = tooltipCountdown(snapshot.sevenDay.resetsAt);
 
   md.appendMarkdown('### $(sparkle) Claude Usage\n\n');
-  md.appendMarkdown('| Ventana | Uso |\n|---|---:|\n');
-  md.appendMarkdown(`| $(flame) Sesión 5h | **${session}%** |\n`);
-  md.appendMarkdown(`| $(calendar) Semanal 7d | **${week}%** |\n`);
-  md.appendMarkdown(`| $(star) Sonnet 7d | **${sonnet}%** |\n`);
-  md.appendMarkdown(`| $(credit-card) Créditos extra | **$${credits}** / $${limit} |\n`);
+  md.appendMarkdown('| Ventana | Uso | Reset |\n|---|---:|---:|\n');
+  md.appendMarkdown(`| $(flame) Sesión 5h | **${session}%** | ${sessionReset} |\n`);
+  md.appendMarkdown(`| $(calendar) Semanal 7d | **${week}%** | ${weekReset} |\n`);
+  md.appendMarkdown(`| $(star) Sonnet 7d | **${sonnet}%** | — |\n`);
+  md.appendMarkdown(`| $(credit-card) Créditos extra | **$${credits}** / $${limit} | — |\n`);
   md.appendMarkdown('\n_Click para abrir el dashboard completo._');
   return md;
 }

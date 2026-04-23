@@ -202,6 +202,33 @@ export function buildHeatmapBuckets(history: UsageSnapshot[]): HeatmapCell[][] {
   return grid;
 }
 
+// Delta vs snapshot de ~7 días atrás (±12h de tolerancia).
+export function calculateWeeklyDelta(history: UsageSnapshot[], window: WindowKey): Delta {
+  if (history.length < 2) return { deltaPct: 0, deltaSign: 'flat' };
+
+  const last = history[history.length - 1];
+  const target = new Date(last.timestamp).getTime() - 7 * 24 * HOUR_MS;
+  const tolerance = 12 * HOUR_MS;
+
+  let best: UsageSnapshot | null = null;
+  let bestDiff = Infinity;
+  for (const s of history.slice(0, -1)) {
+    const diff = Math.abs(new Date(s.timestamp).getTime() - target);
+    if (diff < bestDiff && diff <= tolerance) {
+      bestDiff = diff;
+      best = s;
+    }
+  }
+
+  if (!best) return { deltaPct: 0, deltaSign: 'flat' };
+
+  const deltaPct = pick(last, window) - pick(best, window);
+  const deltaSign: DeltaSign =
+    Math.abs(deltaPct) < 0.05 ? 'flat' : deltaPct > 0 ? 'up' : 'down';
+
+  return { deltaPct, deltaSign };
+}
+
 // Helper compartido: formatea ms a "Xd Yh" o "Xh Ym".
 export function formatDurationCompact(ms: number): string {
   if (ms <= 0) return '0m';

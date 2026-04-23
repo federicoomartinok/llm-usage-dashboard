@@ -5,6 +5,7 @@ import {
   calculateBurnRate,
   projectExhaustion,
   calculateDelta,
+  calculateWeeklyDelta,
   buildSparkline,
   buildHeatmapBuckets,
   formatDurationCompact,
@@ -484,6 +485,18 @@ function statsChipsHtml(history: UsageSnapshot[], snapshot: UsageSnapshot | null
   const avg = weeklyValues.reduce((a, b) => a + b, 0) / Math.max(1, weeklyValues.length);
   const sessionPeak = Math.max(...all.map((s) => s.fiveHour.utilization), 0);
 
+  const weeklyDelta = calculateWeeklyDelta(all, 'sevenDay');
+  const deltaText =
+    weeklyDelta.deltaSign === 'flat'
+      ? '— igual'
+      : `${weeklyDelta.deltaSign === 'up' ? '▲' : '▼'} ${Math.abs(weeklyDelta.deltaPct).toFixed(1)}%`;
+  const deltaColor =
+    weeklyDelta.deltaSign === 'flat'
+      ? COLOR.mutedDim
+      : weeklyDelta.deltaSign === 'up'
+        ? COLOR.error
+        : COLOR.ok;
+
   return `
     <div class="stat-chips">
       <div class="stat-chip">
@@ -497,6 +510,10 @@ function statsChipsHtml(history: UsageSnapshot[], snapshot: UsageSnapshot | null
       <div class="stat-chip">
         <span class="stat-chip-label">Pico sesión</span>
         <span class="stat-chip-value" style="color:${utilizationColor(sessionPeak)}">${sessionPeak.toFixed(1)}%</span>
+      </div>
+      <div class="stat-chip">
+        <span class="stat-chip-label">vs sem. ant.</span>
+        <span class="stat-chip-value" style="color:${deltaColor}">${deltaText}</span>
       </div>
       <div class="stat-chip">
         <span class="stat-chip-label">Lecturas</span>
@@ -645,6 +662,7 @@ function buildHtml(
   <meta charset="UTF-8">
   <meta http-equiv="refresh" content="60">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
   <title>LLM Usage Dashboard</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
