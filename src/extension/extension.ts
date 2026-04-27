@@ -89,8 +89,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push({ dispose: () => panel.dispose() });
 
+  // Watchdog: marca el momento de cada intento de poll para detectar setInterval suspendido
+  let lastPollAt = 0;
+
   poller = new PollerService([anthropic], {
     onUsageUpdate: (snapshot: UsageSnapshot) => {
+      lastPollAt = Date.now();
       database?.insertSnapshot(snapshot);
 
       const history = database?.getSnapshots('anthropic', 24) ?? [];
@@ -102,6 +106,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
 
     onError: (error: Error, providerId: string) => {
+      lastPollAt = Date.now();
       console.error(`[llm-usage] Error en provider "${providerId}":`, error.message);
     },
   });
@@ -110,6 +115,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Poll inmediato al arrancar — sin esperar el primer intervalo
   void poller.pollOnce();
+
+  // Watchdog: cuando la ventana recupera foco, si pasaron > 90s sin poll, dispara uno.
+  // Antigravity/VS Code suspenden setInterval en idle/blur — esto lo recupera.
+  context.subscriptions.push(
+    vscode.window.onDidChangeWindowState((state) => {
+      if (state.focused && Date.now() - lastPollAt > 90_000) {
+        void poller?.pollOnce();
+      }
+    })
+  );
 
   // Perfil al arranque — actualiza panel si ya está abierto
   void anthropic.fetchProfile().then((profile) => {
