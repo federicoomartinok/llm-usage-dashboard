@@ -401,7 +401,7 @@ interface DeltaBucket {
 // Si la cuota se reseteó (valor baja), el delta se clampa a 0.
 function buildDeltaBuckets(history: UsageSnapshot[]): DeltaBucket[] {
   const now = Date.now();
-  const cumulative: Array<{ hour: number; label: string; total: number; sonnet: number; hasData: boolean }> = [];
+  const cumulative: Array<{ hour: number; label: string; firstTotal: number; firstSonnet: number; lastTotal: number; lastSonnet: number; hasData: boolean }> = [];
 
   for (let i = 23; i >= 0; i--) {
     const bucketStart = now - (i + 1) * 3_600_000;
@@ -410,17 +410,23 @@ function buildDeltaBuckets(history: UsageSnapshot[]): DeltaBucket[] {
       const t = new Date(s.timestamp).getTime();
       return t >= bucketStart && t < bucketEnd;
     });
+    const first = inBucket[0];
     const last = inBucket[inBucket.length - 1];
     const label = `${new Date(bucketEnd).getHours().toString().padStart(2, '0')}:00`;
 
     cumulative.push(
-      last
-        ? { hour: 23 - i, label, total: last.sevenDay.utilization, sonnet: last.sevenDaySonnet.utilization, hasData: true }
-        : { hour: 23 - i, label, total: 0, sonnet: 0, hasData: false }
+      last && first
+        ? {
+            hour: 23 - i, label,
+            firstTotal: first.sevenDay.utilization, firstSonnet: first.sevenDaySonnet.utilization,
+            lastTotal: last.sevenDay.utilization, lastSonnet: last.sevenDaySonnet.utilization,
+            hasData: true,
+          }
+        : { hour: 23 - i, label, firstTotal: 0, firstSonnet: 0, lastTotal: 0, lastSonnet: 0, hasData: false }
     );
   }
 
-  // Referencia inicial: último snapshot anterior a la ventana 24h
+  // Referencia inicial: último snapshot anterior a la ventana 24h (si está en el history)
   const windowStart = now - 24 * 3_600_000;
   const before = history.filter((s) => new Date(s.timestamp).getTime() < windowStart);
   const lastBefore = before[before.length - 1];
@@ -431,10 +437,13 @@ function buildDeltaBuckets(history: UsageSnapshot[]): DeltaBucket[] {
     if (!b.hasData) {
       return { hour: b.hour, label: b.label, deltaTotal: 0, deltaSonnet: 0, hasData: false };
     }
-    const dT = prevTotal === null ? 0 : Math.max(0, b.total - prevTotal);
-    const dS = prevSonnet === null ? 0 : Math.max(0, b.sonnet - prevSonnet);
-    prevTotal = b.total;
-    prevSonnet = b.sonnet;
+    // Sin referencia previa cross-bucket → usar first dentro del mismo bucket
+    const refTotal = prevTotal !== null ? prevTotal : b.firstTotal;
+    const refSonnet = prevSonnet !== null ? prevSonnet : b.firstSonnet;
+    const dT = Math.max(0, b.lastTotal - refTotal);
+    const dS = Math.max(0, b.lastSonnet - refSonnet);
+    prevTotal = b.lastTotal;
+    prevSonnet = b.lastSonnet;
     return { hour: b.hour, label: b.label, deltaTotal: dT, deltaSonnet: dS, hasData: true };
   });
 }
