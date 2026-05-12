@@ -1,6 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { UsageSnapshot, AccountProfile } from '../providers/types';
+import type {
+  UsageSnapshot,
+  AccountProfile,
+  CodexSnapshot,
+  CodexProfile,
+  ProviderId,
+} from '../providers/types';
 import {
   calculateBurnRate,
   projectExhaustion,
@@ -22,6 +28,27 @@ export interface StorageStats {
   storageBytes: number;
 }
 
+export interface AnthropicData {
+  current: UsageSnapshot | null;
+  profile: AccountProfile | null;
+  history: UsageSnapshot[];
+  isConfigured: boolean;
+}
+
+export interface CodexData {
+  current: CodexSnapshot | null;
+  profile: CodexProfile | null;
+  history: CodexSnapshot[];
+  isConfigured: boolean;
+}
+
+export interface ExporterInput {
+  activeProvider: ProviderId;
+  anthropic: AnthropicData;
+  codex: CodexData;
+  stats: StorageStats;
+}
+
 export class HtmlExporter {
   private outputPath: string;
 
@@ -33,13 +60,8 @@ export class HtmlExporter {
     return this.outputPath;
   }
 
-  generate(
-    snapshot: UsageSnapshot | null,
-    profile: AccountProfile | null,
-    history: UsageSnapshot[],
-    stats: StorageStats = { snapshotCount: 0, storageBytes: 0 }
-  ): string {
-    const html = buildHtml(snapshot, profile, history, stats);
+  generate(input: ExporterInput): string {
+    const html = buildHtml(input);
     fs.writeFileSync(this.outputPath, html, 'utf-8');
     return html;
   }
@@ -66,6 +88,7 @@ const COLOR = {
   opus: '#cba6f7',
   sonnet: '#89b4fa',
   pink: '#f5c2e7',
+  codex: '#94e2d5',
 } as const;
 
 function utilizationColor(utilization: number): string {
@@ -640,13 +663,253 @@ function statusBarHtml(stats: StorageStats): string {
 // Document shell
 // ============================================================
 
-function buildHtml(
-  snapshot: UsageSnapshot | null,
-  profile: AccountProfile | null,
-  history: UsageSnapshot[],
-  stats: StorageStats
+// ============================================================
+// Codex (OpenAI) — helpers de render
+// ============================================================
+
+function anthropicPlanInfo(profile: AccountProfile | null): string {
+  if (!profile) return '';
+  const planChip = `<span class="plan-chip">${escapeHtml(formatPlanName(profile.planType))}${
+    profile.tier && profile.tier !== 'default' ? ` · Tier ${escapeHtml(profile.tier)}` : ''
+  }</span>`;
+  const email = profile.email ? `<span class="email">${escapeHtml(maskEmail(profile.email))}</span>` : '';
+  return `<div class="plan-info">${email}${planChip}</div>`;
+}
+
+function codexPlanInfo(profile: CodexProfile | null, isConfigured: boolean): string {
+  if (!isConfigured) {
+    return `<div class="plan-info"><span class="email">Codex no configurado</span></div>`;
+  }
+  if (!profile) {
+    return `<div class="plan-info"><span class="email">Cargando perfil...</span></div>`;
+  }
+  const planLabel = profile.planType ? profile.planType.charAt(0).toUpperCase() + profile.planType.slice(1) : 'Unknown';
+  return `<div class="plan-info"><span class="plan-chip codex-chip">ChatGPT ${escapeHtml(planLabel)}</span></div>`;
+}
+
+function multiHeaderHtml(input: ExporterInput): string {
+  const { activeProvider, anthropic, codex } = input;
+  const aPct = anthropic.current
+    ? Math.round(Math.max(anthropic.current.fiveHour.utilization, anthropic.current.sevenDay.utilization))
+    : null;
+  const cPct = codex.current
+    ? Math.round(Math.max(codex.current.primaryWindow.usedPercent, codex.current.secondaryWindow.usedPercent))
+    : null;
+
+  const planInfo =
+    activeProvider === 'anthropic'
+      ? anthropicPlanInfo(anthropic.profile)
+      : codexPlanInfo(codex.profile, codex.isConfigured);
+
+  return `
+    <div class="header">
+      <div class="header-left">
+        <h1>LLM Usage <span class="live-badge"><span class="live-dot"></span>LIVE</span></h1>
+        ${planInfo}
+      </div>
+      <div class="tabs">
+        <button class="tab${activeProvider === 'anthropic' ? ' active' : ''}" data-provider="anthropic">
+          <span class="tab-icon">✨</span><span>Claude</span>${aPct !== null ? `<span class="tab-badge">${aPct}%</span>` : ''}
+        </button>
+        <button class="tab${activeProvider === 'codex' ? ' active' : ''}" data-provider="codex">
+          <span class="tab-icon">⚡</span><span>Codex</span>${cPct !== null ? `<span class="tab-badge">${cPct}%</span>` : ''}
+        </button>
+      </div>
+    </div>`;
+}
+
+function codexHeroWindow(
+  label: string,
+  w: { usedPercent: number; windowMinutes: number; resetsAt: string | null }
 ): string {
-  // Métricas derivadas por ventana
+  const pct = Math.max(0, Math.min(100, w.usedPercent));
+  const color = utilizationColor(pct);
+  const offset = GAUGE_CIRCUMFERENCE * (1 - pct / 100);
+  const reset = w.resetsAt
+    ? `reset ${formatDurationCompact(Math.max(0, new Date(w.resetsAt).getTime() - Date.now()))}`
+    : '—';
+  const windowLabel =
+    w.windowMinutes >= 60
+      ? `${Math.round(w.windowMinutes / 60)}h ventana`
+      : `${w.windowMinutes}m ventana`;
+  return `
+    <div class="hero-card">
+      <div class="hero-top"><div class="hero-label">${escapeHtml(label)}</div></div>
+      <div class="hero-mid">
+        <div class="gauge-circle">
+          <svg viewBox="0 0 100 100">
+            <circle class="gauge-bg" cx="50" cy="50" r="${GAUGE_RADIUS}"/>
+            <circle class="gauge-fill" cx="50" cy="50" r="${GAUGE_RADIUS}"
+              stroke="${color}" stroke-dasharray="${GAUGE_CIRCUMFERENCE.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}"/>
+          </svg>
+          <div class="gauge-value" style="color:${color}"><span class="gauge-pct">${pct.toFixed(0)}</span><span class="gauge-pct-sym">%</span></div>
+        </div>
+      </div>
+      <div class="hero-foot"><span class="hero-burn">${windowLabel}</span><span>${reset}</span></div>
+    </div>`;
+}
+
+function codexHeroPlan(planType: string): string {
+  const label = planType ? planType.charAt(0).toUpperCase() + planType.slice(1) : 'Unknown';
+  return `
+    <div class="hero-card">
+      <div class="hero-top"><div class="hero-label">Plan</div></div>
+      <div style="display:flex;align-items:center;gap:14px;padding:8px 0;">
+        <div style="font-size:36px;line-height:1;">⚡</div>
+        <div>
+          <div style="font-size:18px;font-weight:700;color:${COLOR.codex};">${escapeHtml(label)}</div>
+          <div style="font-size:11px;color:${COLOR.muted};margin-top:2px;">ChatGPT subscription</div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function codexHeroCredits(credits: { used: number; limit: number }): string {
+  const pct = credits.limit > 0 ? (credits.used / credits.limit) * 100 : 0;
+  return `
+    <div class="hero-card credits-card">
+      <div class="hero-top"><div class="hero-label">Créditos extra</div></div>
+      <div class="credits-amount" style="color:${COLOR.codex}">${formatMoney(credits.used)}</div>
+      <div class="credits-sub">de ${formatMoney(credits.limit)} disponibles</div>
+      <div class="credits-bar"><div class="credits-bar-fill" style="width:${Math.min(100, pct).toFixed(1)}%;background:linear-gradient(90deg,${COLOR.codex},${COLOR.warn})"></div></div>
+      <div class="hero-foot"><span class="hero-burn">${pct.toFixed(1)}% usados</span></div>
+    </div>`;
+}
+
+// Deltas por hora para Codex (basado en secondaryWindow.usedPercent)
+function buildCodexDeltaBuckets(
+  history: CodexSnapshot[]
+): Array<{ hour: number; label: string; deltaTotal: number; hasData: boolean }> {
+  const now = Date.now();
+  const cumulative: Array<{ hour: number; label: string; firstTotal: number; lastTotal: number; hasData: boolean }> = [];
+
+  for (let i = 23; i >= 0; i--) {
+    const bucketStart = now - (i + 1) * 3_600_000;
+    const bucketEnd = now - i * 3_600_000;
+    const inBucket = history.filter((s) => {
+      const t = new Date(s.timestamp).getTime();
+      return t >= bucketStart && t < bucketEnd;
+    });
+    const first = inBucket[0];
+    const last = inBucket[inBucket.length - 1];
+    const label = `${new Date(bucketEnd).getHours().toString().padStart(2, '0')}:00`;
+    cumulative.push(
+      last && first
+        ? {
+            hour: 23 - i, label,
+            firstTotal: first.secondaryWindow.usedPercent,
+            lastTotal: last.secondaryWindow.usedPercent,
+            hasData: true,
+          }
+        : { hour: 23 - i, label, firstTotal: 0, lastTotal: 0, hasData: false }
+    );
+  }
+
+  const windowStart = now - 24 * 3_600_000;
+  const before = history.filter((s) => new Date(s.timestamp).getTime() < windowStart);
+  const lastBefore = before[before.length - 1];
+  let prevTotal: number | null = lastBefore?.secondaryWindow.usedPercent ?? null;
+
+  return cumulative.map((b) => {
+    if (!b.hasData) return { hour: b.hour, label: b.label, deltaTotal: 0, hasData: false };
+    const refTotal = prevTotal !== null ? prevTotal : b.firstTotal;
+    const dT = Math.max(0, b.lastTotal - refTotal);
+    prevTotal = b.lastTotal;
+    return { hour: b.hour, label: b.label, deltaTotal: dT, hasData: true };
+  });
+}
+
+function codexActivityChart(history: CodexSnapshot[]): string {
+  const buckets = buildCodexDeltaBuckets(history);
+  const hasAnyData = buckets.some((b) => b.hasData);
+
+  if (!hasAnyData) {
+    return `
+      <div class="chart-empty">
+        <div class="chart-empty-icon">○</div>
+        <div>Aún sin historial suficiente</div>
+        <div class="chart-empty-sub">Los datos aparecerán a medida que se acumulen snapshots</div>
+      </div>`;
+  }
+
+  const maxDelta = Math.max(...buckets.map((b) => b.deltaTotal), 0.1);
+
+  const barsHtml = buckets
+    .map((b) => {
+      if (!b.hasData) return `<div class="bar-group empty" title="${b.label} · sin datos"></div>`;
+      if (b.deltaTotal <= 0.005) return `<div class="bar-group" title="${b.label} · sin consumo"></div>`;
+      const totalH = (b.deltaTotal / maxDelta) * 100;
+      const title = `${b.label} · +${b.deltaTotal.toFixed(2)}%`;
+      return `<div class="bar-group" title="${title}"><div class="bar-stack" style="height:${totalH.toFixed(1)}%;background:linear-gradient(180deg,${COLOR.codex},${COLOR.codex}aa)"></div></div>`;
+    })
+    .join('');
+
+  const labels = [0, 4, 8, 12, 16, 20]
+    .map((h) => {
+      const d = new Date(Date.now() - (23 - h) * 3_600_000);
+      return `<span>${d.getHours().toString().padStart(2, '0')}:00</span>`;
+    })
+    .concat(['<span class="label-now">Ahora</span>'])
+    .join('');
+
+  return `
+    <div class="chart-wrap">
+      <div class="chart-bars">${barsHtml}</div>
+      <div class="chart-axis">${labels}</div>
+    </div>`;
+}
+
+function codexTabContent(codex: CodexData): string {
+  if (!codex.isConfigured) {
+    return `
+      <div class="codex-empty">
+        <div class="codex-empty-icon">⚡</div>
+        <h3>Codex CLI no detectado</h3>
+        <p>Para ver tu uso de Codex acá, instalá el CLI y hacé login:</p>
+        <pre class="codex-empty-cmd">npm i -g @openai/codex
+codex login</pre>
+        <p class="codex-empty-sub">Una vez logueado, recargá la ventana (<code>Developer: Reload Window</code>) y los datos van a aparecer acá automáticamente.</p>
+      </div>`;
+  }
+
+  const snap = codex.current;
+  if (!snap) {
+    return `<div class="gauges-empty">Sin datos de Codex aún. Recopilando...</div>`;
+  }
+
+  return `
+    <div class="gauges-row">
+      ${codexHeroWindow('Primary', snap.primaryWindow)}
+      ${codexHeroWindow('Secondary', snap.secondaryWindow)}
+      ${codexHeroPlan(snap.planType)}
+      ${codexHeroCredits(snap.credits)}
+    </div>
+    <div class="charts-row">
+      <div class="card">
+        <h3>
+          <span>Actividad últimas 24h (Codex)</span>
+          <small class="card-sub">% de cuota secondary consumido por hora</small>
+        </h3>
+        ${codexActivityChart(codex.history)}
+      </div>
+    </div>`;
+}
+
+function makeNonce(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let s = '';
+  for (let i = 0; i < 32; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}
+
+function buildHtml(input: ExporterInput): string {
+  const { activeProvider, anthropic, codex, stats } = input;
+  const snapshot = anthropic.current;
+  const profile = anthropic.profile;
+  const history = anthropic.history;
+  const nonce = makeNonce();
+
+  // Métricas derivadas por ventana (Anthropic)
   const heroes = snapshot
     ? `
         ${heroKpiCard({
@@ -699,7 +962,7 @@ function buildHtml(
   <meta charset="UTF-8">
   <meta http-equiv="refresh" content="60">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <title>LLM Usage Dashboard</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1112,6 +1375,93 @@ function buildHtml(
       50% { opacity: 0.4; transform: scale(0.85); }
     }
 
+    /* ---------- Tabs (multi-provider) ---------- */
+    .tabs {
+      display: flex;
+      gap: 4px;
+      background: ${COLOR.bg}88;
+      padding: 4px;
+      border-radius: 12px;
+      border: 1px solid ${COLOR.cardBorder}55;
+      backdrop-filter: blur(8px);
+    }
+    .tab {
+      background: transparent;
+      border: none;
+      color: ${COLOR.mutedDim};
+      padding: 8px 18px;
+      border-radius: 9px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: inherit;
+    }
+    .tab:hover { color: ${COLOR.fg}; background: ${COLOR.card}aa; }
+    .tab.active {
+      background: linear-gradient(135deg, ${COLOR.card}, ${COLOR.card}cc);
+      color: ${COLOR.fg};
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+    .tab.active[data-provider="anthropic"] { border: 1px solid ${COLOR.accent}44; color: ${COLOR.accent}; }
+    .tab.active[data-provider="codex"] { border: 1px solid ${COLOR.codex}44; color: ${COLOR.codex}; }
+    .tab-icon { font-size: 14px; }
+    .tab-badge {
+      background: ${COLOR.mutedDim};
+      color: ${COLOR.bg};
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-weight: 700;
+    }
+    .tab.active[data-provider="anthropic"] .tab-badge { background: ${COLOR.accent}; color: ${COLOR.bg}; }
+    .tab.active[data-provider="codex"] .tab-badge { background: ${COLOR.codex}; color: ${COLOR.bg}; }
+    .plan-chip.codex-chip {
+      background: linear-gradient(135deg, ${COLOR.codex}22, ${COLOR.codex}11);
+      border-color: ${COLOR.codex}55;
+      color: ${COLOR.codex};
+    }
+
+    /* Provider content visibility */
+    .provider-content { display: none; }
+    .provider-content.active { display: block; animation: fadeIn 0.2s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* Codex empty state */
+    .codex-empty {
+      background: linear-gradient(135deg, ${COLOR.card}99 0%, ${COLOR.card}55 100%);
+      backdrop-filter: blur(14px);
+      border: 1px solid rgba(205,214,244,0.08);
+      border-radius: 16px;
+      padding: 36px;
+      text-align: center;
+      color: ${COLOR.fg};
+    }
+    .codex-empty-icon { font-size: 48px; margin-bottom: 14px; }
+    .codex-empty h3 { font-size: 16px; margin-bottom: 12px; color: ${COLOR.fg}; }
+    .codex-empty p { color: ${COLOR.muted}; font-size: 13px; margin-bottom: 12px; }
+    .codex-empty-cmd {
+      background: ${COLOR.bg};
+      padding: 12px;
+      border-radius: 8px;
+      font-family: 'Cascadia Code', Consolas, monospace;
+      font-size: 12px;
+      color: ${COLOR.codex};
+      margin: 0 auto 14px;
+      text-align: left;
+      max-width: 400px;
+    }
+    .codex-empty-sub { font-size: 11px; color: ${COLOR.mutedDim}; }
+    .codex-empty-sub code {
+      background: ${COLOR.bg};
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-family: 'Cascadia Code', Consolas, monospace;
+    }
+
     /* ---------- Responsive ---------- */
     @media (max-width: 1100px) {
       .gauges-row { grid-template-columns: repeat(2, 1fr); }
@@ -1128,29 +1478,50 @@ function buildHtml(
 </head>
 <body>
   <div class="container">
-    ${headerHtml(profile, snapshot, history)}
+    ${multiHeaderHtml(input)}
 
-    <div class="gauges-row">
-      ${heroes}
-    </div>
-
-    <div class="heatmap-row">
-      ${heatmapHtml(history)}
-    </div>
-
-    <div class="charts-row">
-      <div class="card">
-        <h3>
-          <span>Actividad últimas 24h</span>
-          <small class="card-sub">% de cuota 7d consumido por hora · Opus + Sonnet apilado</small>
-        </h3>
-        ${statsChipsHtml(history, snapshot)}
-        ${activityChartHtml(history)}
+    <div class="provider-content${activeProvider === 'anthropic' ? ' active' : ''}" data-provider="anthropic">
+      <div class="gauges-row">
+        ${heroes}
       </div>
+
+      <div class="heatmap-row">
+        ${heatmapHtml(history)}
+      </div>
+
+      <div class="charts-row">
+        <div class="card">
+          <h3>
+            <span>Actividad últimas 24h</span>
+            <small class="card-sub">% de cuota 7d consumido por hora · Opus + Sonnet apilado</small>
+          </h3>
+          ${statsChipsHtml(history, snapshot)}
+          ${activityChartHtml(history)}
+        </div>
+      </div>
+    </div>
+
+    <div class="provider-content${activeProvider === 'codex' ? ' active' : ''}" data-provider="codex">
+      ${codexTabContent(codex)}
     </div>
 
     ${statusBarHtml(stats)}
   </div>
+  <script nonce="${nonce}">
+    (function() {
+      const vscode = acquireVsCodeApi();
+      const tabs = document.querySelectorAll('.tab');
+      const contents = document.querySelectorAll('.provider-content');
+      tabs.forEach(function(t) {
+        t.addEventListener('click', function() {
+          var p = t.getAttribute('data-provider');
+          tabs.forEach(function(x) { x.classList.toggle('active', x === t); });
+          contents.forEach(function(c) { c.classList.toggle('active', c.getAttribute('data-provider') === p); });
+          vscode.postMessage({ type: 'set-active-provider', provider: p });
+        });
+      });
+    })();
+  </script>
 </body>
 </html>`;
 }

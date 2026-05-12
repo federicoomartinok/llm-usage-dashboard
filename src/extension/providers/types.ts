@@ -39,6 +39,51 @@ export interface UsageProvider {
   fetchProfile(): Promise<AccountProfile>;
 }
 
+// ============================================================
+// Codex (OpenAI ChatGPT subscription) — tipos paralelos
+// ============================================================
+
+export interface CodexUsageWindow {
+  usedPercent: number;        // 0-100
+  windowMinutes: number;      // duración de la ventana (5h = 300, 1 sem = 10080)
+  resetsAt: string | null;    // ISO timestamp
+}
+
+export interface CodexCredits {
+  used: number;               // USD
+  limit: number;              // USD
+}
+
+export interface CodexSnapshot {
+  provider: 'codex';
+  timestamp: string;
+  planType: string;           // free | plus | pro | business | enterprise
+  primaryWindow: CodexUsageWindow;
+  secondaryWindow: CodexUsageWindow;
+  credits: CodexCredits;
+}
+
+export interface CodexProfile {
+  provider: 'codex';
+  email: string;
+  planType: string;
+  lastFetchedAt: string;
+}
+
+export interface CodexProviderApi {
+  id: 'codex';
+  name: string;
+  isConfigured(): Promise<boolean>;
+  fetchUsage(): Promise<CodexSnapshot>;
+  fetchProfile(): Promise<CodexProfile>;
+}
+
+// ============================================================
+// Mensajes webview ↔ extension
+// ============================================================
+
+export type ProviderId = 'anthropic' | 'codex';
+
 export type ExtensionMessage =
   | { type: 'state'; current: UsageSnapshot | null; history: UsageSnapshot[]; profile: AccountProfile | null }
   | { type: 'usage-update'; data: UsageSnapshot }
@@ -48,4 +93,5 @@ export type ExtensionMessage =
 export type WebviewMessage =
   | { type: 'init' }
   | { type: 'request-history'; hours: number }
-  | { type: 'refresh-now' };
+  | { type: 'refresh-now' }
+  | { type: 'set-active-provider'; provider: ProviderId };

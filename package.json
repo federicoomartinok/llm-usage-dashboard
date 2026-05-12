@@ -2,7 +2,7 @@
   "name": "llm-usage-dashboard",
   "displayName": "LLM Usage Dashboard",
   "description": "Real-time LLM usage monitoring dashboard for VS Code",
-  "version": "0.5.8",
+  "version": "0.6.0",
   "publisher": "fede",
   "engines": {
     "vscode": "^1.85.0"

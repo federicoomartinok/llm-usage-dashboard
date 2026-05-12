@@ -1,6 +1,8 @@
 src/**
 test/**
 node_modules/**
+scripts/**
+dashboard-preview.html
 tsconfig.json
 tsconfig.webview.json
 esbuild.config.js

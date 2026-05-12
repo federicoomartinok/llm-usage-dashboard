@@ -1,9 +1,11 @@
 import { readFileSync, statSync, writeFileSync } from 'fs';
-import type { AccountProfile, UsageSnapshot } from '../providers/types';
+import type { AccountProfile, UsageSnapshot, CodexSnapshot, CodexProfile } from '../providers/types';
 
 interface PersistedData {
   snapshots: UsageSnapshot[];
   profile: AccountProfile | null;
+  codexSnapshots?: CodexSnapshot[];
+  codexProfile?: CodexProfile | null;
 }
 
 // Corrige snapshots guardados antes del fix de centavos→USD (monthlyLimit > 500 implica centavos)
@@ -23,6 +25,8 @@ function migrateSnapshot(s: UsageSnapshot): UsageSnapshot {
 export class DatabaseService {
   private snapshots: UsageSnapshot[] = [];
   private profile: AccountProfile | null = null;
+  private codexSnapshots: CodexSnapshot[] = [];
+  private codexProfile: CodexProfile | null = null;
   private readonly dbPath: string | null;
 
   constructor(dbPath: string | null = null) {
@@ -36,6 +40,8 @@ export class DatabaseService {
       const data = JSON.parse(raw) as PersistedData;
       this.snapshots = (data.snapshots ?? []).map(migrateSnapshot);
       this.profile = data.profile ?? null;
+      this.codexSnapshots = data.codexSnapshots ?? [];
+      this.codexProfile = data.codexProfile ?? null;
     } catch {
       // Archivo no existe aún — se creará al primer guardado
     }
@@ -43,7 +49,12 @@ export class DatabaseService {
 
   private persist(): void {
     if (!this.dbPath) return;
-    const data: PersistedData = { snapshots: this.snapshots, profile: this.profile };
+    const data: PersistedData = {
+      snapshots: this.snapshots,
+      profile: this.profile,
+      codexSnapshots: this.codexSnapshots,
+      codexProfile: this.codexProfile,
+    };
     writeFileSync(this.dbPath, JSON.stringify(data), 'utf-8');
   }
 
@@ -91,9 +102,41 @@ export class DatabaseService {
 
   purgeOldSnapshots(retentionDays: number): void {
     const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+    let changed = false;
     const before = this.snapshots.length;
     this.snapshots = this.snapshots.filter(s => s.timestamp >= cutoff);
-    if (this.snapshots.length !== before) this.persist();
+    if (this.snapshots.length !== before) changed = true;
+    const beforeCodex = this.codexSnapshots.length;
+    this.codexSnapshots = this.codexSnapshots.filter(s => s.timestamp >= cutoff);
+    if (this.codexSnapshots.length !== beforeCodex) changed = true;
+    if (changed) this.persist();
+  }
+
+  // ============== Codex ==============
+
+  insertCodexSnapshot(snapshot: CodexSnapshot): void {
+    this.codexSnapshots.push(snapshot);
+    const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    this.codexSnapshots = this.codexSnapshots.filter(s => s.timestamp >= cutoff);
+    this.persist();
+  }
+
+  getCodexSnapshots(hours: number): CodexSnapshot[] {
+    const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+    return this.codexSnapshots.filter(s => s.timestamp >= since);
+  }
+
+  getCodexSnapshotCount(): number {
+    return this.codexSnapshots.length;
+  }
+
+  upsertCodexProfile(profile: CodexProfile): void {
+    this.codexProfile = profile;
+    this.persist();
+  }
+
+  getCodexProfile(): CodexProfile | null {
+    return this.codexProfile;
   }
 
   close(): void {
